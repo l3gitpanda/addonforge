@@ -282,6 +282,13 @@ fn remember(mods: &[ModInfo]) {
     }
 }
 
+/// Put mods in the in-memory cache as an update check would, for tests of
+/// what other modules make of a listing.
+#[cfg(test)]
+pub fn remember_for_tests(mods: &[ModInfo]) {
+    remember(mods)
+}
+
 fn request_with(client: &reqwest::Client, method: reqwest::Method, url: String, key: &str) -> reqwest::RequestBuilder {
     client
         .request(method, url)

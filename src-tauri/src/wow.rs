@@ -331,46 +331,55 @@ pub fn scan_addons(install: &Path) -> Vec<AddonFolder> {
         if name.starts_with('.') || name.starts_with("Blizzard_") {
             continue;
         }
-        let mut af = AddonFolder { folder: name.clone(), ..Default::default() };
-        // Forever-specific TOC first so its Interface/Version win.
-        for suf in FOREVER_TOC_SUFFIXES {
-            let candidate = p.join(format!("{name}{suf}.toc"));
-            if candidate.is_file() {
-                af.forever_toc = true;
-                parse_toc(&candidate, &mut af);
-            }
+        if let Some(af) = read_folder(&p, &name) {
+            out.push(af);
         }
-        let generic = p.join(format!("{name}.toc"));
-        let mut any = af.forever_toc;
-        if generic.is_file() {
-            any |= parse_toc(&generic, &mut af);
+    }
+    out.sort_by(|a, b| a.folder.to_ascii_lowercase().cmp(&b.folder.to_ascii_lowercase()));
+    out
+}
+
+/// Read one addon folder's TOCs as WoW would once the folder is called `name`
+/// (an extracted archive folder can still have another name). `None` when it
+/// has no TOC, so is not an addon folder.
+pub fn read_folder(p: &Path, name: &str) -> Option<AddonFolder> {
+    let mut af = AddonFolder { folder: name.to_string(), ..Default::default() };
+    // Forever-specific TOC first so its Interface/Version win.
+    for suf in FOREVER_TOC_SUFFIXES {
+        let candidate = p.join(format!("{name}{suf}.toc"));
+        if candidate.is_file() {
+            af.forever_toc = true;
+            parse_toc(&candidate, &mut af);
         }
-        if !any {
-            // Case-insensitive fallback: any *.toc in the folder.
-            if let Ok(inner) = fs::read_dir(&p) {
-                for f in inner.flatten() {
-                    let fname = f.file_name().to_string_lossy().to_string();
-                    if fname.to_ascii_lowercase().ends_with(".toc") {
-                        any |= parse_toc(&f.path(), &mut af);
-                        let stem = fname.trim_end_matches(".toc").trim_end_matches(".TOC");
-                        if FOREVER_TOC_SUFFIXES.iter().any(|s| stem.ends_with(s)) {
-                            af.forever_toc = true;
-                        }
+    }
+    let generic = p.join(format!("{name}.toc"));
+    let mut any = af.forever_toc;
+    if generic.is_file() {
+        any |= parse_toc(&generic, &mut af);
+    }
+    if !any {
+        // Case-insensitive fallback: any *.toc in the folder.
+        if let Ok(inner) = fs::read_dir(p) {
+            for f in inner.flatten() {
+                let fname = f.file_name().to_string_lossy().to_string();
+                if fname.to_ascii_lowercase().ends_with(".toc") {
+                    any |= parse_toc(&f.path(), &mut af);
+                    let stem = fname.trim_end_matches(".toc").trim_end_matches(".TOC");
+                    if FOREVER_TOC_SUFFIXES.iter().any(|s| stem.ends_with(s)) {
+                        af.forever_toc = true;
                     }
                 }
             }
         }
-        if !any {
-            continue; // not an addon folder
-        }
-        if af.title.is_empty() {
-            af.title = name.clone();
-        }
-        af.forever_interface = af.interfaces.iter().any(|n| FOREVER_INTERFACE_RANGE.contains(n));
-        out.push(af);
     }
-    out.sort_by(|a, b| a.folder.to_ascii_lowercase().cmp(&b.folder.to_ascii_lowercase()));
-    out
+    if !any {
+        return None; // not an addon folder
+    }
+    if af.title.is_empty() {
+        af.title = name.to_string();
+    }
+    af.forever_interface = af.interfaces.iter().any(|n| FOREVER_INTERFACE_RANGE.contains(n));
+    Some(af)
 }
 
 #[cfg(test)]

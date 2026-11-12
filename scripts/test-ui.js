@@ -32,12 +32,18 @@ const document = {
 let detailReply;
 let invokeReply = () => Promise.resolve();
 const invokeCalls = [];
+// The file dialog and Tauri's drag-drop events, as the app sees them.
+let dialogReply = () => Promise.resolve(null);
+const dialogCalls = [];
+const tauriListeners = {};
 const context = vm.createContext({
   document, window: { __TAURI__: { core: { invoke(command, args) {
     invokeCalls.push({ command, args });
     if (command === "addon_details") return detailReply;
     return invokeReply(command, args);
-  } }, opener: {} } },
+  } }, opener: {},
+  dialog: { open(options) { dialogCalls.push(options); return dialogReply(options); } },
+  event: { listen(name, handler) { tauriListeners[name] = handler; return Promise.resolve(() => {}); } } } },
   setTimeout, clearTimeout, console,
 });
 const source = fs.readFileSync('ui/app.js', 'utf8').split('// ---------------------------------------------------------------- boot')[0];
@@ -93,15 +99,23 @@ assert.match(element('installed-sort-status').attributes['aria-label'], /highest
 run(`settings = { has_curse: true };
 curse.rows = [
   {id:1,name:'TomTom <x>',summary:'Nav',authors:'A',category:'Map & Minimap',downloads:1500,url:'https://www.curseforge.com/projects/1',installable:true,installed:false,catalog_id:null},
-  {id:2,name:'Leatrix',summary:'QoL',authors:'B',category:'',downloads:70000000,url:'u',installable:false,installed:false,catalog_id:null},
-  {id:3,name:'Questie',summary:'Q',authors:'C',category:'Quests',downloads:5,url:'u',installable:true,installed:true,catalog_id:null}
+  {id:2,name:'Leatrix',summary:'QoL',authors:'B',category:'',downloads:70000000,url:'u',installable:false,link_reason:'author',installed:false,catalog_id:null},
+  {id:3,name:'Questie',summary:'Q',authors:'C',category:'Quests',downloads:5,url:'u',installable:true,installed:true,catalog_id:null},
+  {id:4,name:'RetailOnly',summary:'R',authors:'D',category:'',downloads:9,url:'u',installable:false,link_reason:'no-forever',installed:false,catalog_id:null}
 ]; curse.query = 'tom'; curse.total = 120; curse.loaded = 50; renderCurseRows();`);
 assert.match(element('curse-list').innerHTML, /TomTom &lt;x&gt;/);
 assert.match(element('curse-list').innerHTML, /data-act="curse-install"/);
-assert.match(element('curse-list').innerHTML, /link only/);
+// A link-only row says why on the row itself, not only on hover, and an
+// author's opt-out is never put down to the key.
+const curseRow = (id) => element('curse-list').innerHTML.split('<div class="item"').find((r) => r.includes(`data-id="${id}"`));
+assert.match(curseRow(2), />CurseForge app only<\/span>/);
+assert.match(curseRow(2), /title="Its author lets only CurseForge&#39;s own app download it[^"]*An API key can&#39;t change that/);
+assert.doesNotMatch(curseRow(2), /curse-install/);
+assert.match(curseRow(4), />no Forever file<\/span>/);
+assert.doesNotMatch(curseRow(4), /own app/, 'no Forever file is not the author opting out');
 assert.match(element('curse-list').innerHTML, /installed/);
 assert.match(element('curse-list').innerHTML, /Map &amp; Minimap/);
-assert.equal(String(element('curse-status').textContent), '3 of 120 from CurseForge');
+assert.equal(String(element('curse-status').textContent), '4 of 120 from CurseForge');
 run(`curse.rows = []; curse.total = 0; curse.loaded = 0; curse.query = 'zzz'; renderCurseRows();`);
 assert.equal(String(element('curse-status').textContent), 'Nothing on CurseForge for "zzz".');
 assert.equal(element('curse-list').innerHTML, '');
@@ -189,8 +203,18 @@ assert.equal(run("installSources(catalog[1]).map(s => s.kind).join()"), 'github,
 assert.equal(run("installSources(catalog[2]).length"), 0);
 assert.equal(run("installSources(catalog[3]).length"), 0, 'Wago-only is link only');
 assert.match(element('browse-list').innerHTML, /<select class="src-pick"[^>]*><option value="github">GitHub/);
-assert.match(element('browse-list').innerHTML, /link only/);
+const catalogRow = (id) => element('browse-list').innerHTML.split('<div class="item"').find((r) => r.includes(`data-id="${id}"`));
+assert.match(catalogRow('locked'), />CurseForge app only<\/span>/, 'an opted-out author is named as the reason');
+assert.match(catalogRow('wagoonly'), />Wago only<\/span>/);
 assert.doesNotMatch(element('browse-list').innerHTML, /Wago key/);
+// The same reasons reach the details pane, and without a key a CurseForge-only entry asks for one.
+assert.match(run("linkOnlyWhy(catalog[2]).tip"), /^Its author lets only CurseForge's own app/);
+assert.notEqual(run("linkOnlyWhy({ curse: 9 }).label"), 'needs API key', 'with a key, never ask for one');
+run(`settings = { has_curse: false }`);
+assert.equal(run("linkOnlyWhy({ curse: 9 }).label"), 'needs API key');
+assert.equal(run("linkOnlyWhy({ curse: 9, curse_locked: true }).label"), 'CurseForge app only', 'a key would not help an opted-out author');
+assert.equal(run("linkOnlyWhy({}).label"), 'link only');
+run(`settings = { has_curse: true }`);
 run(`renderImportPlan([{ name: 'List <b>', key: 'x', installed: false, installable: true, source: { kind: 'github', id: 'a/<img src=x>' }, why: '' }])`);
 assert.match(element('import-plan').innerHTML, /a\/&lt;img src=x&gt;/, 'An imported source is shown as text');
 assert.doesNotMatch(element('import-plan').innerHTML, /<img/, 'An imported list cannot add markup');
@@ -393,7 +417,7 @@ assert.ok(parseFloat(menu.style.right) >= 12, 'Options stay inside the right edg
   assert.match(element('toast').className, /bad/);
   // A CurseForge-only row: one line, and an update you have to fetch yourself.
   run(`packages = [
-    {key:'bt',name:'Bartender4',folders:['Bartender4'],source_label:'CurseForge',source_url:'https://www.curseforge.com/projects/1',status:'curse-update',supports_forever:true,missing_deps:[],installed_version:'4.15.3',remote_version:'Bartender4-4.16.0',note:'Bartender4-4.16.0 is on CurseForge; you have 4.15.3. Open its page to download it.'},
+    {key:'bt',name:'Bartender4',folders:['Bartender4'],source_label:'CurseForge',source_url:'https://www.curseforge.com/projects/1',status:'curse-update',supports_forever:true,missing_deps:[],installed_version:'4.15.3',remote_version:'Bartender4-4.16.0',note:'Bartender4-4.16.0 is on CurseForge; you have 4.15.3. Open its page to download it, then use Install from zip.'},
     {key:'bg',name:'Bagnon',folders:['Bagnon'],source_label:'CurseForge',status:'curse-only',supports_forever:true,missing_deps:[],note:'The author only distributes this through CurseForge.'}
   ]; activeFilter = 'all'; $('installed-filter').value = ''; $('show-ignored').checked = true; renderInstalled();`);
   assert.match(element('installed-list').innerHTML, /Update on CurseForge/);
@@ -531,6 +555,111 @@ assert.ok(parseFloat(menu.style.right) >= 12, 'Options stay inside the right edg
   assert.equal(shown['btn-selfcheck'], true);
   assert.equal(shown['selfupdate-off'], false);
 
+  // Install from a zip on disk. The dialog offers zips only, the core does the
+  // install, and the row says where it came from and never offers an update.
+  const zipRow = {
+    key: 'curse:990001', name: 'NetherSuite', folders: ['NetherSuite'], source: null, source_label: 'Zip file',
+    source_url: 'https://www.curseforge.com/projects/990001', from_zip: 'NetherSuite-1.2.3.zip', curse_id: 990001,
+    catalog_id: null, status: 'local', managed: true, supports_forever: true, missing_deps: [], installed_version: '1.2.3',
+    note: "Installed from a zip file (NetherSuite-1.2.3.zip). AddonForge doesn't update it: install a newer zip to replace it",
+  };
+  context.zipRow = zipRow;
+  run(`settings = { recycle_label: 'Recycle Bin' }; packages = []; catalog = []; curse.rows = [{ id: 990001, name: 'NetherSuite', installed: false, installable: false, link_reason: 'author' }];
+    activeFilter = 'all'; $('installed-filter').value = ''; $('show-ignored').checked = true; busy = false;`);
+  const zipCalls = () => invokeCalls.filter((c) => c.command === 'install_zip').map((c) => c.args);
+  const zipAnswer = (command, args) => command === 'install_zip'
+    ? Promise.resolve({ ...zipRow, key: 'k:' + args.path, name: args.path.split(/[\\/]/).pop().replace(/\.zip$/i, '') })
+    : command === 'scan' ? Promise.resolve([]) : Promise.resolve([]);
+  invokeReply = (command, args) => command === 'install_zip' ? Promise.resolve({ ...zipRow }) : command === 'scan' ? Promise.resolve([{ ...zipRow, status: 'unknown' }]) : Promise.resolve([]);
+  dialogReply = () => Promise.resolve(['C:\\Users\\x\\Downloads\\NetherSuite-1.2.3.zip']);
+  await element('btn-install-zip').onclick();
+  assert.deepEqual(JSON.parse(JSON.stringify(dialogCalls.at(-1).filters)), [{ name: 'Zip archive', extensions: ['zip'] }]);
+  assert.equal(dialogCalls.at(-1).directory, false);
+  assert.deepEqual(JSON.parse(JSON.stringify(zipCalls())), [{ path: 'C:\\Users\\x\\Downloads\\NetherSuite-1.2.3.zip', allowNonForever: false }]);
+  assert.match(element('toast').textContent, /^Installed NetherSuite 1\.2\.3 from a zip file\. AddonForge won't update it/);
+  assert.doesNotMatch(element('toast').className, /bad/);
+  assert.equal(run('busy'), false, 'An install from a zip releases the interface');
+  assert.equal(run('curse.rows[0].installed'), true, 'Its CurseForge row now says installed');
+  let zipHtml = element('installed-list').innerHTML;
+  assert.match(zipHtml, /From a zip file/, 'The row keeps the status the install returned, not the rescan\'s');
+  assert.match(zipHtml, /title="Installed from NetherSuite-1\.2\.3\.zip\. The link opens its page">Zip file<\/a>/);
+  assert.match(zipHtml, /doesn&#39;t update it/);
+  assert.doesNotMatch(zipHtml, /data-act="update"/, 'A zip install is never offered an update or a reinstall');
+  assert.match(zipHtml, /data-act="pin"/);
+  assert.match(zipHtml, /data-act="remove"/);
+  assert.equal(String(element('stat-attention').textContent), '0', 'A zip install is not a problem to look at');
+  // A newer release on CurseForge is reported and still not offered.
+  run(`packages = [{ ...zipRow, status: 'curse-update', remote_version: 'NetherSuite-1.3.0', note: 'NetherSuite-1.3.0 is on CurseForge; you have 1.2.3. Open its page to download it, then use Install from zip.' }]; renderInstalled();`);
+  zipHtml = element('installed-list').innerHTML;
+  assert.match(zipHtml, /Update on CurseForge/);
+  assert.match(zipHtml, /then use Install from zip/);
+  assert.doesNotMatch(zipHtml, /data-act="update"/);
+  assert.equal(String(element('stat-curse').textContent), '1');
+  // A cancelled dialog does nothing.
+  const beforeCancel = invokeCalls.length;
+  dialogReply = () => Promise.resolve(null);
+  await element('btn-install-zip').onclick();
+  assert.equal(invokeCalls.length, beforeCancel);
+  // No Forever TOC: asked first, as for a download; "Install anyway" sends it again with consent.
+  invokeReply = (command, args) => command === 'install_zip'
+    ? (args.allowNonForever ? Promise.resolve({ ...zipRow, name: 'Classic', installed_version: null }) : Promise.reject('NOT_FOREVER'))
+    : Promise.resolve([]);
+  const asking = run(`installZips(['D:/zips/Classic.zip'])`);
+  await new Promise((r) => setTimeout(r, 0));
+  assert.match(element('modal-text').innerHTML, /<b>Classic\.zip<\/b> has no Forever TOC/);
+  element('modal-yes').onclick();
+  await asking;
+  assert.deepEqual(zipCalls().slice(-2).map((a) => a.allowNonForever), [false, true]);
+  assert.match(element('toast').textContent, /^Installed Classic from a zip file/);
+  // Declining installs nothing and says nothing more.
+  element('toast').textContent = '';
+  const declining = run(`installZips(['D:/zips/Classic.zip'])`);
+  await new Promise((r) => setTimeout(r, 0));
+  element('modal-no').onclick();
+  await declining;
+  assert.equal(zipCalls().at(-1).allowNonForever, false);
+  assert.equal(element('toast').textContent, '');
+  // A zip the core refuses says why, in the app's words.
+  invokeReply = (command) => command === 'install_zip'
+    ? Promise.reject('SAFETY: refused, the zip contains an executable file (Evil/helper.exe) which no WoW addon needs')
+    : Promise.resolve([]);
+  await run(`installZips(['D:/zips/Evil.zip'])`);
+  assert.match(element('toast').textContent, /^Not installed: Evil\.zip: Refused for safety: the zip contains an executable file/);
+  assert.match(element('toast').className, /bad/);
+  assert.equal(run('busy'), false);
+
+  // Dragging files over the window: the overlay shows only when a zip is among them.
+  let dropShown = null;
+  element('drop-zone').classList = { add() {}, remove() {}, toggle: (cls, on) => { if (cls === 'hidden') dropShown = !on; } };
+  for (const name of ['tauri://drag-enter', 'tauri://drag-leave', 'tauri://drag-drop']) assert.equal(typeof tauriListeners[name], 'function', name);
+  tauriListeners['tauri://drag-enter']({ payload: { paths: ['C:/x/notes.txt'] } });
+  assert.equal(dropShown, false);
+  tauriListeners['tauri://drag-enter']({ payload: { paths: ['C:/x/notes.txt', 'C:/x/Pack.ZIP'] } });
+  assert.equal(dropShown, true);
+  tauriListeners['tauri://drag-leave']({ payload: null });
+  assert.equal(dropShown, false);
+  // A drop installs the zips, one after another, and leaves everything else alone.
+  invokeReply = zipAnswer;
+  const dropStart = zipCalls().length;
+  dropShown = true;
+  await tauriListeners['tauri://drag-drop']({ payload: { paths: ['C:/x/notes.txt', 'C:/x/Pack.ZIP', 'C:/x/Other.zip'], position: { x: 1, y: 1 } } });
+  assert.equal(dropShown, false);
+  assert.deepEqual(zipCalls().slice(dropStart).map((a) => a.path), ['C:/x/Pack.ZIP', 'C:/x/Other.zip']);
+  assert.match(element('toast').textContent, /^Installed 2 addons from zip files\. AddonForge won't update them\. 1 file was not a \.zip and left alone/);
+  assert.doesNotMatch(element('toast').className, /bad/);
+  // Nothing to install: no call at all.
+  await tauriListeners['tauri://drag-drop']({ payload: { paths: ['C:/x/notes.txt'] } });
+  assert.equal(zipCalls().length, dropStart + 2);
+  assert.match(element('toast').textContent, /Only \.zip files can be installed/);
+  // While another job runs, a drop waits for the user to try again.
+  run('busy = true');
+  await tauriListeners['tauri://drag-drop']({ payload: { paths: ['C:/x/Pack.zip'] } });
+  assert.equal(zipCalls().length, dropStart + 2);
+  assert.match(element('toast').textContent, /busy/);
+  run('busy = false');
+  // An opted-out CurseForge row points at the same route.
+  assert.match(run(`LINK_ONLY.author.tip`), /download the zip there yourself, then use Install from zip in My addons/);
+
   run('clearTimeout(toastTimer); clearTimeout(curse.timer)');
-  console.log('UI checks passed: counts, eligible updates, failure priority and retry, filters, search, escaping, empty states, modal focus and cancellation, sort direction and remote pagination, saved preferences, backups and folder actions, CurseForge-only rows, reversible removal, the CurseForge API key and self-update being off without a channel.');
+  console.log('UI checks passed: counts, eligible updates, failure priority and retry, filters, search, escaping, empty states, modal focus and cancellation, sort direction and remote pagination, saved preferences, backups and folder actions, CurseForge-only rows, reversible removal, the CurseForge API key, self-update being off without a channel, and installing from a zip by dialog or drop.');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

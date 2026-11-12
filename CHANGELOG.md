@@ -8,6 +8,25 @@ Based on AddonForge v0.4.0 (build 31 source, commit `7bdd46b`).
 
 ### Added
 
+- **Install from a zip file.** For addons AddonForge is not allowed to
+  download, such as the many CurseForge projects whose authors allow only
+  CurseForge's own app (NetherSuite, Details!, DBM, Bagnon, Leatrix Plus,
+  Auctionator...): download the zip in your browser, then use **Install from
+  zip…** in My addons, or drop the zip on the window. AddonForge copies the zip
+  to its downloads folder and installs the copy through exactly the path a
+  download takes: the install lock, extraction limits, the safety scan, name
+  checks, rollback and recovery. Your own file is never changed or removed.
+  The addon then appears in My addons as installed by AddonForge (pin it,
+  remove it) with the status "From a zip file", and AddonForge never claims it
+  can update it: Update is not offered, and a newer zip installs over it the
+  same way. Installing the same addon later from GitHub or CurseForge takes
+  over the zip install (keeping its pin) when the download holds all of its
+  folders and none of another addon's. If its TOC carries a CurseForge project id, the update check still
+  says when CurseForge lists a newer version ("X is on CurseForge; you have
+  Y"). A zip with no Forever TOC asks first, as a download does. Nothing is
+  downloaded and no CurseForge page is read; the only request is the
+  catalogue, to name the addon.
+- `addonforge --cli install-zip <file.zip> [--force]`.
 - **Your own CurseForge API key.** CurseForge search and install were switched
   off in any build without upstream's built-in key, which a fork does not have.
   A key can now be added in Settings (or with `addonforge --cli curse-key set`,
@@ -22,6 +41,16 @@ Based on AddonForge v0.4.0 (build 31 source, commit `7bdd46b`).
 
 ### Changed
 
+- **Link-only rows say why.** A row AddonForge can't install used to read
+  "link only", with the reason only in a tooltip, so an addon whose author has
+  turned off downloads in other apps looked like a key that didn't work. The
+  row now names the reason: "CurseForge app only" (the author's choice; a key
+  can't change it), "needs API key", "no Forever file" or "Wago only", with the
+  full sentence on hover and in the details pane. Installing such an addon, or
+  an installed one's status line, says the same, and the internal
+  `CURSE_OPTOUT` tag no longer reaches the message. These rows, and an
+  installed row with a newer release on CurseForge, now point at Install from
+  zip.
 - **A fork build no longer updates itself from the original project.** The
   self-updater still pointed at the original's releases, and the app holds the
   original's signing key (for the catalogue), so a fork build offered "Update
@@ -74,3 +103,7 @@ From the Phase One audit; details and the open items in `docs/AUDIT.md`.
 
 - A search, install and update with a real CurseForge key. The fork has no key
   yet. See `docs/PROVIDER_INTEGRATIONS.md`.
+- Install from zip in the running window: the file dialog and dropping a file
+  were not driven by hand. The CLI path was run end to end against a throwaway
+  game folder, the window was checked by screenshot, and the dialog and drop
+  handlers are covered by `scripts/test-ui.js` with Tauri's API stubbed.

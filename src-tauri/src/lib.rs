@@ -79,6 +79,9 @@ pub struct Package {
     pub supports_forever: bool,
     /// True when AddonForge installed this itself (exact version known).
     pub managed: bool,
+    /// Installed from a zip on disk: the zip's file name. Such a package has no
+    /// `source` and is never updated by the app.
+    pub from_zip: Option<String>,
     pub pinned: bool,
     pub ignored: bool,
     pub missing_deps: Vec<MissingDep>,
@@ -111,6 +114,10 @@ fn pick_source(
     // exception since build 25: its updater keys went Patreon-only, so a
     // package once installed from Wago falls through to any other source.
     if let Some(m) = managed {
+        // A zip from disk has nowhere to update from, whatever its TOC names.
+        if m.source == LOCAL_SOURCE {
+            return None;
+        }
         if let Some(s) = Source::from_parts(&m.source, &m.source_id) {
             // The author moved the repo: follow the catalogue's current name, so
             // whoever registers the old name cannot ship updates to this install.
@@ -158,13 +165,57 @@ fn pick_source(
     None
 }
 
+/// An addon whose author has switched off downloads in other apps. CurseForge
+/// gives no other app a download for it, whatever the key, so these say whose
+/// choice it was and never suggest that a key would help. What the user can
+/// do instead: download the zip in a browser and install it from disk.
+const CURSE_AUTHOR_ONLY_UPDATE: &str =
+    "Its author lets only CurseForge's own app download it, so AddonForge can't update it. The link opens its page: download the zip there, then use Install from zip";
+const CURSE_AUTHOR_ONLY_INSTALL: &str =
+    "Its author lets only CurseForge's own app download it, so AddonForge can't install it. Open its CurseForge page, download the zip there, then use Install from zip in My addons";
+
+/// `Installed::source` of an addon installed from a zip on disk. Not a
+/// `Source`: there is nothing to resolve it against, so it is never updated.
+const LOCAL_SOURCE: &str = "local";
+const LOCAL_LABEL: &str = "Zip file";
+
+/// The note on a row installed from a zip on disk.
+fn local_note(file: &str) -> String {
+    let from = if file.is_empty() { "a zip file".to_string() } else { format!("a zip file ({file})") };
+    format!("Installed from {from}. AddonForge doesn't update it: install a newer zip to replace it")
+}
+
 /// Why a row whose only home is CurseForge is link only. Without a key the
-/// fix is the user's to make, so say so; with one, the author has opted out.
+/// fix is the user's to make, so say so; when the author opted out, say that.
 fn curse_only_note(author_opted_out: bool, have_key: bool) -> &'static str {
-    if have_key || author_opted_out {
+    if author_opted_out {
+        CURSE_AUTHOR_ONLY_UPDATE
+    } else if have_key {
         "Only on CurseForge: AddonForge can't update it, but the link works"
     } else {
         "On CurseForge: add your CurseForge API key in Settings and AddonForge can update it. The link works meanwhile"
+    }
+}
+
+/// A failed resolve, in words for the user. CurseForge's opt-out comes back
+/// as a tagged error; the tag is for the code, not for a toast.
+fn resolve_error(e: &anyhow::Error) -> String {
+    let msg = e.to_string();
+    if msg.starts_with(sources::curseforge::OPT_OUT) {
+        CURSE_AUTHOR_ONLY_INSTALL.into()
+    } else {
+        msg
+    }
+}
+
+/// Why a CurseForge search row can't be installed here, for the row to show:
+/// `None` when it can be.
+fn curse_link_reason(pick: &sources::curseforge::Pick) -> Option<&'static str> {
+    use sources::curseforge::Pick;
+    match pick {
+        Pick::Ready(_) | Pick::NeedsFile(_) => None,
+        Pick::OptOut => Some("author"),
+        Pick::NoForeverFile => Some("no-forever"),
     }
 }
 
@@ -350,19 +401,14 @@ fn build_packages(st: &AppState, cat: &Catalog, folders: &[AddonFolder]) -> Vec<
     let mut out = Vec::new();
     for (key, entry, fs) in groups {
         let in_group: Vec<String> = fs.iter().map(|f| f.folder.to_ascii_lowercase()).collect();
-        let is_root = |f: &AddonFolder| {
-            !f.dependencies.iter().any(|d| in_group.contains(&d.to_ascii_lowercase()))
-                && f.part_of.as_ref().map(|p| !in_group.contains(&p.to_ascii_lowercase())).unwrap_or(true)
-        };
         let primary = entry
             .filter(|e| e.group_required_dependencies)
             .and_then(|e| e.folders.first())
             .and_then(|name| fs.iter().copied().find(|f| f.folder.eq_ignore_ascii_case(name)))
-            .or_else(|| fs.iter()
-                .min_by_key(|f| (!is_root(f), f.folder.len(), f.folder.clone()))
-                .copied())
+            .or_else(|| head_folder(&fs))
             .unwrap();
         let managed = st.installed.get(&key);
+        let from_zip = managed.filter(|m| m.source == LOCAL_SOURCE).map(|m| m.source_id.clone());
         let name = entry
             .map(|e| e.name.clone())
             .unwrap_or_else(|| primary.title.clone());
@@ -370,8 +416,13 @@ fn build_packages(st: &AppState, cat: &Catalog, folders: &[AddonFolder]) -> Vec<
             .or_else(|| entry.filter(|e| e.group_required_dependencies).and_then(|_| primary.version.clone()))
             .or_else(|| fs.iter().find_map(|f| f.version.clone()))
             .filter(|v| !v.is_empty() && !v.starts_with('@'));
-        let source = pick_source(entry, primary, managed)
-            .or_else(|| fs.iter().find_map(|f| pick_source(None, f, None)));
+        // A zip from disk never gains a source from its TOC or the catalogue:
+        // the files are the user's choice, not something the app can update.
+        let source = if from_zip.is_some() {
+            None
+        } else {
+            pick_source(entry, primary, managed).or_else(|| fs.iter().find_map(|f| pick_source(None, f, None)))
+        };
         let installed_bundle_version = if managed.is_none()
             && primary.folder.eq_ignore_ascii_case("Questie")
             && matches!(&source, Some(Source::Github(repo)) if repo.eq_ignore_ascii_case("Questie/Questie"))
@@ -409,6 +460,7 @@ fn build_packages(st: &AppState, cat: &Catalog, folders: &[AddonFolder]) -> Vec<
 
         let mut notice = entry.and_then(|e| e.notice.clone()).filter(|n| !n.trim().is_empty());
         let (status, mut note) = match &source {
+            _ if from_zip.is_some() => ("local".to_string(), local_note(from_zip.as_deref().unwrap_or_default())),
             Some(Source::Wago(_)) => (
                 "no-source".to_string(),
                 "Wago isn't a source any more (its updater keys are Patreon-only): reinstall from GitHub or CurseForge".to_string(),
@@ -439,7 +491,10 @@ fn build_packages(st: &AppState, cat: &Catalog, folders: &[AddonFolder]) -> Vec<
             installed_bundle_version,
             author: primary.author.clone(),
             notes: entry.map(|e| e.desc.clone()).filter(|d| !d.is_empty()).or_else(|| primary.notes.clone()),
-            source_label: source.as_ref().map(|s| s.label()).unwrap_or_default(),
+            source_label: match (&from_zip, &source) {
+                (Some(_), _) => LOCAL_LABEL.to_string(),
+                (None, s) => s.as_ref().map(|s| s.label()).unwrap_or_default(),
+            },
             source_url: source
                 .as_ref()
                 .map(|s| s.url())
@@ -451,6 +506,7 @@ fn build_packages(st: &AppState, cat: &Catalog, folders: &[AddonFolder]) -> Vec<
             notice,
             supports_forever,
             managed: managed.is_some(),
+            from_zip,
             missing_deps: missing,
             icon_texture: std::iter::once(primary)
                 .chain(fs.iter().copied())
@@ -465,6 +521,17 @@ fn build_packages(st: &AppState, cat: &Catalog, folders: &[AddonFolder]) -> Vec<
     }
     out.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
     out
+}
+
+/// The folder a group of folders is named after: one that needs no other
+/// folder of the group (as a dependency or a parent), then the shortest name.
+fn head_folder<'a>(fs: &[&'a AddonFolder]) -> Option<&'a AddonFolder> {
+    let in_group: Vec<String> = fs.iter().map(|f| f.folder.to_ascii_lowercase()).collect();
+    let is_root = |f: &AddonFolder| {
+        !f.dependencies.iter().any(|d| in_group.contains(&d.to_ascii_lowercase()))
+            && f.part_of.as_ref().map(|p| !in_group.contains(&p.to_ascii_lowercase())).unwrap_or(true)
+    };
+    fs.iter().copied().min_by_key(|f| (!is_root(f), f.folder.len(), f.folder.clone()))
 }
 
 async fn catalog_cached(app: &App) -> Catalog {
@@ -615,14 +682,11 @@ async fn resolve_into(app: &App, pkg: &mut Package, cat: &Catalog) {
         Ok(r) => apply_remote(pkg, r, vouched),
         Err(e) => {
             let msg = e.to_string();
-            if let Some(rest) = msg.strip_prefix(sources::curseforge::OPT_OUT) {
+            if msg.starts_with(sources::curseforge::OPT_OUT) {
                 // Not an error: the author only publishes through CurseForge's own app.
                 pkg.status = "curse-only".into();
                 // One line only: the catalogue's wording wins when it has one.
-                pkg.note = pkg
-                    .notice
-                    .take()
-                    .unwrap_or_else(|| format!("CurseForge{rest}; the link still works"));
+                pkg.note = pkg.notice.take().unwrap_or_else(|| CURSE_AUTHOR_ONLY_UPDATE.to_string());
                 return;
             }
             loge!("check {}: {e}", pkg.key);
@@ -691,8 +755,14 @@ fn curse_listing_into(pkg: &mut Package, prerelease: bool) {
     match installed.as_deref() {
         Some(have) if later_version(have, &listing.version) => {
             pkg.status = "curse-update".into();
-            pkg.note = format!("{} is on CurseForge; you have {have}. Open its page to download it.", listing.version);
+            pkg.note = format!(
+                "{} is on CurseForge; you have {have}. Open its page to download it, then use Install from zip.",
+                listing.version
+            );
         }
+        // A zip's own note says where its files came from, which matters more
+        // than a listing that is not newer.
+        _ if pkg.from_zip.is_some() => {}
         Some(have) => pkg.note = format!("CurseForge lists {}; you have {have}.", listing.version),
         None => pkg.note = format!("CurseForge lists {}.", listing.version),
     }
@@ -738,9 +808,23 @@ async fn check_all(app: Shared, pkgs: &mut [Package], cat: &Catalog) {
         pkgs[i] = p;
     }
     let prerelease = app.state.lock().await.allow_prerelease;
-    for p in pkgs.iter_mut().filter(|p| p.status == "curse-only") {
+    // Zip installs joined the batch too (no source, maybe a CurseForge id), so
+    // a newer release of an opted-out addon is still reported.
+    for p in pkgs.iter_mut().filter(|p| p.status == "curse-only" || p.status == "local") {
         curse_listing_into(p, prerelease);
     }
+}
+
+/// Where an update of `pkg` would come from. A zip from disk has none, and
+/// says so in words rather than as a missing source.
+fn update_source(pkg: &Package) -> Result<Source, String> {
+    if pkg.from_zip.is_some() {
+        return Err(format!(
+            "{} was installed from a zip file, so AddonForge can't update it: download a newer zip and install it the same way",
+            pkg.name
+        ));
+    }
+    pkg.source.clone().ok_or_else(|| "This addon has no update source".to_string())
 }
 
 // ---------------------------------------------------------------- commands
@@ -1037,7 +1121,7 @@ async fn install_from(
         wago_key: None,
         prerelease: st.allow_prerelease,
     };
-    let remote = sources::resolve(&app.client, src, opts).await.map_err(err)?;
+    let remote = sources::resolve(&app.client, src, opts).await.map_err(|e| resolve_error(&e))?;
     let vouched = entry.and_then(|e| e.forever);
     // A source archive says nothing about flavours (forever = None); then the
     // catalogue's own verdict stands in for it.
@@ -1084,13 +1168,16 @@ async fn install_from(
         protected_package_folders(&fresh, &[], key)
     };
     let addons2 = addons.clone();
-    let folders = tokio::task::spawn_blocking(move || install::place_locked(&zip, &addons2, &protected))
-        .await
-        .map_err(err)?
-        .map_err(|e| {
-            loge!("place {key}: {e}");
-            e.to_string()
-        })?;
+    // A zip install of the same addon gives way to its real source: see `takeover_plan`.
+    let (folders, taken_over) = tokio::task::spawn_blocking(move || {
+        install::place_planned(&zip, &addons2, |found| Ok(takeover_plan(&fresh, protected, found)))
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| {
+        loge!("place {key}: {e}");
+        e.to_string()
+    })?;
     let rec = Installed {
         source: src.kind().into(),
         source_id: src.id(),
@@ -1098,11 +1185,175 @@ async fn install_from(
         folders,
         installed_at: state::now_secs(),
     };
-    let (key_owned, rec_saved) = (key.to_string(), rec.clone());
-    change_settings(app, move |st| record_install(st, &key_owned, &rec_saved)).await?;
+    let (key_owned, rec_saved, from) = (key.to_string(), rec.clone(), taken_over.clone());
+    change_settings(app, move |st| record_taking_over(st, &key_owned, &rec_saved, from.as_deref())).await?;
     drop(lock);
+    if let Some(old) = &taken_over {
+        logi!("{key} replaces {old}, which was installed from a zip file");
+    }
     logi!("installed {key} {} ({} folders)", rec.version, rec.folders.len());
     Ok(rec)
+}
+
+/// The folder owners a download from a real source must not replace, and the
+/// zip install it takes over, if any. A zip install gives way when it is the
+/// only package owning any of the archive's folders and the archive holds
+/// every one of its folders: that is the same addon arriving from somewhere
+/// the app can update it from, so it takes the zip's place instead of being
+/// refused (a zip's key need not match the source's, e.g. `folder:Foo` against
+/// `github:owner/Foo`). Every other owner stays protected.
+fn takeover_plan(
+    st: &AppState,
+    mut protected: HashMap<String, String>,
+    found: &[install::Found],
+) -> (HashMap<String, String>, Option<String>) {
+    let targets: HashSet<String> = found.iter().map(|(_, name)| name.to_ascii_lowercase()).collect();
+    let owners: HashSet<&String> = targets.iter().filter_map(|t| protected.get(t)).collect();
+    let taken = match owners.into_iter().collect::<Vec<_>>().as_slice() {
+        [only] => st
+            .installed
+            .get(*only)
+            .filter(|rec| rec.source == LOCAL_SOURCE && rec.folders.iter().all(|f| targets.contains(&f.to_ascii_lowercase())))
+            .map(|_| (*only).clone()),
+        _ => None,
+    };
+    if let Some(old) = &taken {
+        protected.retain(|_, owner| owner != old);
+    }
+    (protected, taken)
+}
+
+/// Save an install. When it took over a zip install, that record goes
+/// (`record_install` moves all its folders to `key`) and its pin and ignore
+/// carry over to `key`.
+fn record_taking_over(st: &mut AppState, key: &str, rec: &Installed, taken_over: Option<&str>) {
+    record_install(st, key, rec);
+    if let Some(old) = taken_over.filter(|old| *old != key) {
+        if st.pinned.remove(old) {
+            st.pinned.insert(key.to_string());
+        }
+        if st.ignored.remove(old) {
+            st.ignored.insert(key.to_string());
+        }
+    }
+}
+
+/// Which package a zip's folders are, the version their TOC gives, and the
+/// catalogue entry if any. The key is the one the app already shows those
+/// folders under (their managed owner, a catalogue entry, an id from the TOC,
+/// else the folder name), so a pin carries over and a later install from a
+/// real source takes over the same package. When the folders make several
+/// packages, a catalogue one wins, then the one with the most folders.
+fn local_identity(st: &AppState, cat: &Catalog, folders: &[AddonFolder]) -> Option<(String, String, Option<String>)> {
+    let mut pkgs = build_packages(st, cat, folders);
+    pkgs.sort_by_key(|p| (p.catalog_id.is_none(), std::cmp::Reverse(p.folders.len()), p.curse_id.is_none(), p.name.to_ascii_lowercase()));
+    let chosen = pkgs.into_iter().next()?;
+    let mine: Vec<&AddonFolder> =
+        folders.iter().filter(|f| chosen.folders.iter().any(|c| c.eq_ignore_ascii_case(&f.folder))).collect();
+    let usable = |v: &Option<String>| v.clone().filter(|v| !v.is_empty() && !v.starts_with('@'));
+    let version = head_folder(&mine)
+        .and_then(|f| usable(&f.version))
+        .or_else(|| mine.iter().find_map(|f| usable(&f.version)))
+        .unwrap_or_default();
+    Some((chosen.key, version, chosen.catalog_id))
+}
+
+/// Place a zip from disk that has been staged at `staged`, and work out the
+/// record to save for it. It goes through `install::place_planned`: the same
+/// extraction limits, safety scan, name checks, rollback and placement as a
+/// download. Only after those, and before anything moves, is it read: which
+/// package it is, and whether it is for Forever. The caller holds the addons
+/// lock and saves the record.
+fn place_local_zip(
+    staged: &Path,
+    install: &str,
+    file_name: &str,
+    st: &AppState,
+    cat: &Catalog,
+    allow_non_forever: bool,
+) -> Result<(String, Installed), String> {
+    let (folders, (key, version)) = install::place_planned(staged, &addons_dir(install), |found| {
+        let read: Vec<AddonFolder> = found.iter().filter_map(|(path, name)| wow::read_folder(path, name)).collect();
+        // A zip says nothing about flavours except through its TOCs.
+        if !allow_non_forever && !read.iter().any(|f| f.supports_forever()) {
+            anyhow::bail!("NOT_FOREVER");
+        }
+        let (key, version, catalog_id) =
+            local_identity(st, cat, &read).ok_or_else(|| anyhow::anyhow!("zip contains no addon folder"))?;
+        // The same folder protection as a download of that package.
+        let grouped = catalog_id
+            .and_then(|id| cat.addons.iter().find(|e| e.id == id))
+            .is_some_and(|e| e.group_required_dependencies);
+        let protected = if grouped {
+            let on_disk = wow::scan_addons(Path::new(install));
+            protected_package_folders(st, &build_packages(st, cat, &on_disk), &key)
+        } else {
+            protected_package_folders(st, &[], &key)
+        };
+        Ok((protected, (key, version)))
+    })
+    // The whole chain: "extract failed" alone would not say what was wrong.
+    .map_err(|e| format!("{e:#}"))?;
+    let rec = Installed {
+        source: LOCAL_SOURCE.into(),
+        source_id: file_name.to_string(),
+        version,
+        folders,
+        installed_at: state::now_secs(),
+    };
+    Ok((key, rec))
+}
+
+/// Install a zip the user downloaded themselves (in a browser, for an addon
+/// whose author allows no other app to download it). The zip is copied to the
+/// downloads folder, then takes the path a download takes: the addons lock,
+/// extraction limits, the safety scan, rollback and recovery. It is recorded
+/// as managed, with source `local`, which the app never updates. Nothing is
+/// fetched: the only network use is the catalogue, to name the package.
+async fn install_local(app: &App, path: &Path, allow_non_forever: bool) -> Result<(String, Installed), String> {
+    let install = current_install(app).await?;
+    let addons = addons_dir(&install);
+    let cat = catalog_cached(app).await;
+    let file_name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    let staged = {
+        let (src, tmp) = (path.to_path_buf(), downloads_dir());
+        tokio::task::spawn_blocking(move || install::stage_local(&src, &tmp))
+            .await
+            .map_err(err)?
+            .map_err(|e| format!("{e:#}"))?
+    };
+    logi!("install from a zip file: {file_name}");
+    // From here to the saved state, the addons lock is held and the owners are read
+    // from disk, so another copy of the app cannot change them in between.
+    let lock = {
+        let addons = addons.clone();
+        tokio::task::spawn_blocking(move || install::lock_addons(&addons)).await.map_err(err).and_then(|r| r.map_err(err))
+    };
+    let lock = match lock {
+        Ok(lock) => lock,
+        Err(e) => {
+            let _ = std::fs::remove_file(&staged);
+            return Err(e);
+        }
+    };
+    let fresh = state::AppState::load();
+    let (key, rec) = {
+        let (install, name) = (install.clone(), file_name.clone());
+        tokio::task::spawn_blocking(move || place_local_zip(&staged, &install, &name, &fresh, &cat, allow_non_forever))
+            .await
+            .map_err(err)?
+            .map_err(|e| {
+                if e != "NOT_FOREVER" {
+                    loge!("place {file_name}: {e}");
+                }
+                e
+            })?
+    };
+    let (key_owned, rec_saved) = (key.clone(), rec.clone());
+    change_settings(app, move |st| record_install(st, &key_owned, &rec_saved)).await?;
+    drop(lock);
+    logi!("installed {key} {} from a zip file ({} folders)", rec.version, rec.folders.len());
+    Ok((key, rec))
 }
 
 async fn refreshed(app: &App, key: &str) -> Result<Package, String> {
@@ -1127,7 +1378,7 @@ async fn update_package(
         .into_iter()
         .find(|p| p.key == key)
         .ok_or_else(|| "Addon not found on disk any more".to_string())?;
-    let src = pkg.source.clone().ok_or_else(|| "This addon has no update source".to_string())?;
+    let src = update_source(&pkg)?;
     let cat = catalog_cached(&app).await;
     let (hint, _) = entry_hint(&cat, &pkg);
     install_from(&app, &key, &src, hint.as_deref(), allow_non_forever.unwrap_or(false)).await?;
@@ -1305,8 +1556,12 @@ struct CurseRow {
     category: String,
     downloads: u64,
     url: String,
-    /// False when the author only distributes through CurseForge's own app.
+    /// False when the author only distributes through CurseForge's own app,
+    /// or there is no Forever file.
     installable: bool,
+    /// Why it isn't installable, for the row to say: "author" (opted out of
+    /// other apps) or "no-forever". `None` when it is installable.
+    link_reason: Option<&'static str>,
     /// Catalogue id when this project is already listed (so its row is preferred).
     catalog_id: Option<String>,
     installed: bool,
@@ -1347,10 +1602,8 @@ async fn curse_search(
         .into_iter()
         .map(|m| {
             let entry = cat.addons.iter().find(|e| e.curse == Some(m.id));
-            let installable = matches!(
-                sources::curseforge::pick_file(&m, st.allow_prerelease),
-                sources::curseforge::Pick::Ready(_) | sources::curseforge::Pick::NeedsFile(_)
-            );
+            let link_reason = curse_link_reason(&sources::curseforge::pick_file(&m, st.allow_prerelease));
+            let installable = link_reason.is_none();
             let installed = have.iter().any(|p| {
                 p.curse_id == Some(m.id)
                     || matches!(&p.source, Some(Source::Curse(c)) if *c == m.id)
@@ -1365,6 +1618,7 @@ async fn curse_search(
                 downloads: m.download_count,
                 url: if m.links.website_url.is_empty() { sources::curseforge::project_url(m.id) } else { m.links.website_url.clone() },
                 installable,
+                link_reason,
                 catalog_id: entry.map(|e| e.id.clone()),
                 installed,
             }
@@ -1462,7 +1716,7 @@ fn chosen_source(e: &CatalogEntry, kind: &str) -> Result<Source, String> {
                 return Err(sources::curseforge::NO_KEY.into());
             }
             if e.curse_locked {
-                return Err(format!("{}'s author only distributes it through CurseForge's own app", e.name));
+                return Err(format!("{}'s author lets only CurseForge's own app download it, so AddonForge can't install it", e.name));
             }
             e.curse.map(Source::Curse).ok_or_else(missing)
         }
@@ -1512,6 +1766,20 @@ async fn install_source(
     let key = key_for_source(&cat, &st, &source, key.as_deref());
     install_from(&app, &key, &source, None, allow_non_forever.unwrap_or(false)).await?;
     refreshed(&app, &key).await
+}
+
+/// Install a zip the user picked or dropped on the window. See `install_local`.
+#[tauri::command]
+async fn install_zip(app: State<'_, Shared>, path: String, allow_non_forever: Option<bool>) -> Result<Package, String> {
+    let (key, _) = install_local(&app, Path::new(&path), allow_non_forever.unwrap_or(false)).await?;
+    let mut p = refreshed(&app, &key).await?;
+    // What CurseForge lists for it, if this run's update check already asked.
+    // No request is made here.
+    if p.status == "local" {
+        let prerelease = app.state.lock().await.allow_prerelease;
+        curse_listing_into(&mut p, prerelease);
+    }
+    Ok(p)
 }
 
 #[tauri::command]
@@ -2067,7 +2335,7 @@ pub fn cli(args: &[String]) -> i32 {
                 let key = args.get(1).ok_or("usage: update <package key>")?;
                 let pkgs = scan_packages(&app).await?;
                 let pkg = pkgs.into_iter().find(|p| &p.key == key).ok_or("no such package")?;
-                let src = pkg.source.clone().ok_or("package has no source")?;
+                let src = update_source(&pkg)?;
                 let cat = catalog_cached(&app).await;
                 let (hint, _) = entry_hint(&cat, &pkg);
                 let force = args.iter().any(|a| a == "--force");
@@ -2084,6 +2352,12 @@ pub fn cli(args: &[String]) -> i32 {
                 let key = key_for_source(&cat, &st, &src, None);
                 let rec = install_from(&app, &key, &src, e.asset_hint.as_deref(), force).await?;
                 Ok(serde_json::to_value(rec).unwrap())
+            }
+            "install-zip" => {
+                let path = args.get(1).filter(|a| !a.starts_with("--")).ok_or("usage: install-zip <file.zip> [--force]")?;
+                let force = args.iter().any(|a| a == "--force");
+                let (key, rec) = install_local(&app, Path::new(path), force).await?;
+                Ok(serde_json::json!({ "key": key, "installed": rec }))
             }
             "backup" => Ok(serde_json::to_value(do_backup(&app).await?).unwrap()),
             "search" => {
@@ -2194,7 +2468,7 @@ pub fn cli(args: &[String]) -> i32 {
                 let st = app.state.lock().await.clone();
                 Ok(serde_json::json!({ "state": st, "log_tail": log::tail(20) }))
             }
-            _ => Err("usage: addonforge --cli installs | use <dir> | scan | check | catalog | resolve <id..>|all | update <key> [--force] | install <catalog-id> [--force] | github <owner/repo> [--force] | search <text> | curse <project id> [--force] | curse-key status|set|clear | prerelease on|off | pin|ignore <key> on|off | export <file> | selfcheck [url] | selfupdate [url] [--force] | diag".into()),
+            _ => Err("usage: addonforge --cli installs | use <dir> | scan | check | catalog | resolve <id..>|all | update <key> [--force] | install <catalog-id> [--force] | install-zip <file.zip> [--force] | github <owner/repo> [--force] | search <text> | curse <project id> [--force] | curse-key status|set|clear | prerelease on|off | pin|ignore <key> on|off | export <file> | selfcheck [url] | selfupdate [url] [--force] | diag".into()),
         }
     });
     match res {
@@ -2243,6 +2517,7 @@ pub fn run() {
             install_catalog,
             install_source,
             install_github,
+            install_zip,
             remove_package,
             open_addons_folder,
             open_log,
@@ -2334,6 +2609,38 @@ mod tests {
         for (opted_out, have_key) in [(true, false), (true, true), (false, true)] {
             assert!(!curse_only_note(opted_out, have_key).contains("API key"), "{opted_out} {have_key}");
         }
+        // An opted-out row says whose choice it was, key or no key.
+        for have_key in [false, true] {
+            assert!(curse_only_note(true, have_key).starts_with("Its author lets only CurseForge's own app"), "{have_key}");
+        }
+    }
+
+    #[test]
+    fn an_opted_out_install_explains_itself_without_the_internal_tag() {
+        let opted_out = anyhow::anyhow!("{}: the author only distributes this addon through CurseForge's own app", sources::curseforge::OPT_OUT);
+        let msg = resolve_error(&opted_out);
+        assert!(!msg.contains(sources::curseforge::OPT_OUT), "{msg}");
+        assert!(msg.contains("Its author lets only CurseForge's own app download it"), "{msg}");
+        assert!(!msg.contains("API key"), "a key would not help: {msg}");
+        // Anything else passes through as it was.
+        let other = anyhow::anyhow!("CurseForge has no Forever release for this addon");
+        assert_eq!(resolve_error(&other), "CurseForge has no Forever release for this addon");
+    }
+
+    #[test]
+    fn a_curseforge_search_row_says_why_it_is_link_only() {
+        use sources::curseforge::Pick;
+        let ready = Remote {
+            version: "1.0".into(),
+            download_url: "https://edge.forgecdn.net/files/1/2/a.zip".into(),
+            filename: "a.zip".into(),
+            forever: Some(true),
+            prerelease: false,
+        };
+        assert_eq!(curse_link_reason(&Pick::Ready(ready)), None);
+        assert_eq!(curse_link_reason(&Pick::NeedsFile(7)), None);
+        assert_eq!(curse_link_reason(&Pick::OptOut), Some("author"));
+        assert_eq!(curse_link_reason(&Pick::NoForeverFile), Some("no-forever"));
     }
 
     #[test]
@@ -3059,5 +3366,374 @@ mod moved_repo_tests {
         // A fork the user installed from a link is not a moved name, so it stays.
         let src = pick_source(Some(&e), &AddonFolder::default(), Some(&saved("someone/EasyFind-fork")));
         assert!(matches!(src, Some(Source::Github(r)) if r == "someone/EasyFind-fork"));
+    }
+}
+
+#[cfg(test)]
+mod local_zip_tests {
+    use super::*;
+    use std::fs;
+    use std::io::Write as _;
+
+    /// A throwaway game folder with an empty AddOns, a Downloads folder where
+    /// the user's zips are, and the staging folder downloads use. Removed on drop.
+    struct Scratch {
+        root: PathBuf,
+        install: String,
+        downloads: PathBuf,
+        staging: PathBuf,
+    }
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+            let n = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let root = std::env::temp_dir().join(format!("af-localzip-{name}-{}-{n}", std::process::id()));
+            let _ = fs::remove_dir_all(&root);
+            let install = root.join("_forever_");
+            fs::create_dir_all(install.join("Interface").join("AddOns")).unwrap();
+            let downloads = root.join("Downloads");
+            fs::create_dir_all(&downloads).unwrap();
+            Scratch { install: install.to_string_lossy().to_string(), staging: root.join("staging"), downloads, root }
+        }
+
+        fn addons(&self) -> PathBuf {
+            addons_dir(&self.install)
+        }
+
+        /// A zip in Downloads, the way a browser leaves it.
+        fn zip(&self, name: &str, entries: &[(&str, &[u8])]) -> PathBuf {
+            let path = self.downloads.join(name);
+            let mut w = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+            for (entry, body) in entries {
+                w.start_file(*entry, zip::write::SimpleFileOptions::default()).unwrap();
+                w.write_all(body).unwrap();
+            }
+            w.finish().unwrap();
+            path
+        }
+
+        /// What `install_local` does once it holds the addons lock.
+        fn install(&self, zip: &Path, st: &AppState, cat: &Catalog, allow_non_forever: bool) -> Result<(String, Installed), String> {
+            let staged = install::stage_local(zip, &self.staging).map_err(|e| format!("{e:#}"))?;
+            let name = zip.file_name().unwrap().to_string_lossy().to_string();
+            place_local_zip(&staged, &self.install, &name, st, cat, allow_non_forever)
+        }
+
+        fn packages(&self, st: &AppState, cat: &Catalog) -> Vec<Package> {
+            build_packages(st, cat, &wow::scan_addons(Path::new(&self.install)))
+        }
+
+        fn addon_folders(&self) -> Vec<String> {
+            let mut names: Vec<String> =
+                fs::read_dir(self.addons()).unwrap().flatten().map(|e| e.file_name().to_string_lossy().to_string()).collect();
+            names.sort();
+            names
+        }
+
+        fn staged_left(&self) -> usize {
+            fs::read_dir(&self.staging).map(|d| d.count()).unwrap_or(0)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn nether_toc(version: &str) -> String {
+        format!("## Interface: 16001\n## Title: NetherSuite\n## Version: {version}\n## X-Curse-Project-ID: 990001\n")
+    }
+
+    #[test]
+    fn a_zip_installs_as_a_managed_package_the_app_never_updates() {
+        let s = Scratch::new("managed");
+        let toc = nether_toc("1.2.3");
+        let zip = s.zip(
+            "NetherSuite-1.2.3.zip",
+            &[("NetherSuite-1.2.3/NetherSuite.toc", toc.as_bytes()), ("NetherSuite-1.2.3/core.lua", b"-- core")],
+        );
+        let mut st = AppState::default();
+        let cat = Catalog::default();
+        let (key, rec) = s.install(&zip, &st, &cat, false).unwrap();
+        assert_eq!(key, "curse:990001", "the key the row already had, from the TOC's CurseForge id");
+        assert_eq!((rec.source.as_str(), rec.source_id.as_str(), rec.version.as_str()), ("local", "NetherSuite-1.2.3.zip", "1.2.3"));
+        assert_eq!(rec.folders, vec!["NetherSuite"], "installed under the TOC's name, not the zip's folder name");
+        assert!(s.addons().join("NetherSuite").join("core.lua").exists());
+        assert!(zip.exists(), "the user's zip stays where it was");
+        assert_eq!(s.staged_left(), 0, "the staged copy is gone");
+        assert!(!s.addons().join(install::TMP_DIR).exists());
+
+        record_install(&mut st, &key, &rec);
+        let pkgs = s.packages(&st, &cat);
+        assert_eq!(pkgs.len(), 1);
+        let p = &pkgs[0];
+        assert_eq!(p.key, key);
+        assert!(p.managed, "pinning and removal treat it as AddonForge's own");
+        assert_eq!(p.from_zip.as_deref(), Some("NetherSuite-1.2.3.zip"));
+        assert_eq!(p.source, None, "nothing to update it from");
+        assert_eq!(p.status, "local");
+        assert_eq!(p.source_label, "Zip file");
+        assert_eq!(p.curse_id, Some(990001), "the TOC's CurseForge id is kept for the listing");
+        assert_eq!(p.source_url.as_deref(), Some("https://www.curseforge.com/projects/990001"));
+        assert_eq!(p.installed_version.as_deref(), Some("1.2.3"));
+        assert_eq!(p.note, local_note("NetherSuite-1.2.3.zip"));
+        assert!(p.note.contains("doesn't update it"), "{}", p.note);
+        assert!(update_source(p).unwrap_err().contains("installed from a zip file"));
+        // Whatever the TOC names, a zip install has no source to fall back on.
+        let toc_ids = AddonFolder { curse: Some(990001), website: Some("https://github.com/a/b".into()), ..Default::default() };
+        assert!(pick_source(None, &toc_ids, st.installed.get(&key)).is_none());
+    }
+
+    #[test]
+    fn a_catalogue_addon_from_a_zip_keeps_its_identity_and_still_has_no_source() {
+        let s = Scratch::new("catalogue");
+        let cat: Catalog = serde_json::from_str(
+            r#"{"addons":[{"id":"nether","name":"NetherSuite","github":"someone/NetherSuite","curse":990001,"folders":["NetherSuite"]}]}"#,
+        )
+        .unwrap();
+        let toc = nether_toc("1.2.3");
+        let zip = s.zip("NetherSuite.zip", &[("NetherSuite/NetherSuite.toc", toc.as_bytes())]);
+        let mut st = AppState::default();
+        let (key, rec) = s.install(&zip, &st, &cat, false).unwrap();
+        assert_eq!(key, "cat:nether");
+        record_install(&mut st, &key, &rec);
+        let p = s.packages(&st, &cat).remove(0);
+        assert_eq!(p.catalog_id.as_deref(), Some("nether"), "the catalogue row shows it as installed");
+        assert_eq!(p.source, None, "the catalogue's GitHub source is not taken up for a zip");
+        assert_eq!(p.status, "local");
+        assert_eq!(p.name, "NetherSuite");
+        // Installing it from a real source later takes over the same package.
+        assert_eq!(key_for_source(&cat, &st, &Source::Github("someone/NetherSuite".into()), None), "cat:nether");
+    }
+
+    #[test]
+    fn a_newer_zip_replaces_the_files_and_keeps_the_package_and_its_pin() {
+        let s = Scratch::new("reinstall");
+        let cat = Catalog::default();
+        let mut st = AppState::default();
+        let v1 = nether_toc("1.2.3");
+        let zip = s.zip("NetherSuite-1.2.3.zip", &[("NetherSuite/NetherSuite.toc", v1.as_bytes()), ("NetherSuite/old.lua", b"old")]);
+        let (key, rec) = s.install(&zip, &st, &cat, false).unwrap();
+        record_install(&mut st, &key, &rec);
+        st.pinned.insert(key.clone());
+        let v2 = nether_toc("1.3.0");
+        let zip = s.zip(
+            "NetherSuite-1.3.0.zip",
+            &[("NetherSuite-1.3.0/NetherSuite.toc", v2.as_bytes()), ("NetherSuite-1.3.0/new.lua", b"new")],
+        );
+        let (again, rec) = s.install(&zip, &st, &cat, false).unwrap();
+        assert_eq!(again, key, "the managed owner of the folders is the package");
+        assert_eq!(rec.version, "1.3.0");
+        record_install(&mut st, &again, &rec);
+        assert!(s.addons().join("NetherSuite").join("new.lua").exists());
+        assert!(!s.addons().join("NetherSuite").join("old.lua").exists());
+        let p = s.packages(&st, &cat).remove(0);
+        assert!(p.pinned, "the pin carries over");
+        assert_eq!(p.installed_version.as_deref(), Some("1.3.0"));
+        assert_eq!(p.from_zip.as_deref(), Some("NetherSuite-1.3.0.zip"));
+    }
+
+    #[test]
+    fn its_real_source_takes_over_a_zip_install_with_another_key() {
+        let s = Scratch::new("takeover");
+        let cat = Catalog::default();
+        let mut st = AppState::default();
+        // Not in the catalogue and no provider id: only a GitHub website in its TOC.
+        let toc = |v: &str| format!("## Interface: 16001\n## Version: {v}\n## X-Website: https://github.com/owner/Foo\n");
+        let v1 = toc("1.0");
+        let zip = s.zip("Foo-1.0.zip", &[("Foo/Foo.toc", v1.as_bytes()), ("Foo/old.lua", b"old")]);
+        let (zip_key, rec) = s.install(&zip, &st, &cat, false).unwrap();
+        assert_eq!(zip_key, "folder:Foo");
+        record_install(&mut st, &zip_key, &rec);
+        st.pinned.insert(zip_key.clone());
+        // Installed from GitHub, it gets GitHub's key, which the zip's record does not have.
+        let src = Source::Github("owner/Foo".into());
+        let key = key_for_source(&cat, &st, &src, None);
+        assert_eq!(key, "github:owner/Foo");
+        // A GitHub release, placed the way `install_from` places it.
+        let v2 = toc("1.1");
+        let release = s.zip("release.zip", &[("Foo-1.1/Foo.toc", v2.as_bytes()), ("Foo-1.1/new.lua", b"new")]);
+        let protected = protected_package_folders(&st, &[], &key);
+        let (folders, taken) =
+            install::place_planned(&release, &s.addons(), |found| Ok(takeover_plan(&st, protected, found))).unwrap();
+        assert_eq!(taken.as_deref(), Some("folder:Foo"));
+        let rec = Installed { source: src.kind().into(), source_id: src.id(), version: "1.1".into(), folders, installed_at: 0 };
+        record_taking_over(&mut st, &key, &rec, taken.as_deref());
+        assert!(!st.installed.contains_key("folder:Foo"), "the zip's record is gone");
+        assert!(st.pinned.contains(&key) && !st.pinned.contains("folder:Foo"), "its pin carries over");
+        assert!(s.addons().join("Foo").join("new.lua").exists());
+        assert!(!s.addons().join("Foo").join("old.lua").exists());
+        let p = s.packages(&st, &cat).remove(0);
+        assert_eq!(p.key, key);
+        assert_eq!(p.source, Some(src), "updatable again");
+        assert_eq!(p.from_zip, None);
+        assert!(p.managed && p.pinned);
+    }
+
+    #[test]
+    fn a_zip_install_gives_way_only_to_an_archive_that_replaces_all_of_it_and_nothing_else() {
+        let found = |names: &[&str]| -> Vec<install::Found> { names.iter().map(|n| (PathBuf::new(), n.to_string())).collect() };
+        let record = |source: &str, folders: &[&str]| Installed {
+            source: source.into(),
+            source_id: "x".into(),
+            version: "1".into(),
+            folders: folders.iter().map(|f| f.to_string()).collect(),
+            installed_at: 0,
+        };
+        let mut st = AppState::default();
+        st.installed.insert("folder:Foo".into(), record(LOCAL_SOURCE, &["Foo", "FooData"]));
+        st.installed.insert("github:a/Shared".into(), record("github", &["Shared"]));
+        st.installed.insert("github:a/Bar".into(), record("github", &["Bar"]));
+        let protected = protected_package_folders(&st, &[], "github:owner/Foo");
+        let plan = |names: &[&str]| takeover_plan(&st, protected.clone(), &found(names));
+        // All of the zip's folders, nothing of anyone else's: taken over, and only it.
+        let (left, taken) = plan(&["Foo", "FOODATA"]);
+        assert_eq!(taken.as_deref(), Some("folder:Foo"));
+        assert!(!left.values().any(|owner| owner == "folder:Foo"));
+        assert_eq!(left.get("shared").map(String::as_str), Some("github:a/Shared"), "other packages stay protected");
+        // Part of the zip install: not the same addon, so it stays protected.
+        let (left, taken) = plan(&["Foo"]);
+        assert_eq!(taken, None);
+        assert_eq!(left.get("foo").map(String::as_str), Some("folder:Foo"));
+        // Another package's folder in the archive as well: nothing is taken over.
+        assert_eq!(plan(&["Foo", "FooData", "Shared"]).1, None);
+        // An install from a real source is never taken over this way.
+        assert_eq!(plan(&["Bar"]).1, None);
+        // And with no owner at all there is nothing to take over.
+        assert_eq!(plan(&["New"]).1, None);
+    }
+
+    #[test]
+    fn a_zip_never_takes_a_folder_that_belongs_to_another_package() {
+        let s = Scratch::new("owned");
+        let shared = s.addons().join("Shared");
+        fs::create_dir_all(&shared).unwrap();
+        fs::write(shared.join("Shared.toc"), "## Interface: 16001\n").unwrap();
+        fs::write(shared.join("keep.lua"), "installed from GitHub").unwrap();
+        let mut st = AppState::default();
+        st.installed.insert(
+            "github:a/Shared".into(),
+            Installed { source: "github".into(), source_id: "a/Shared".into(), version: "1".into(), folders: vec!["Shared".into()], installed_at: 0 },
+        );
+        let toc: &[u8] = b"## Interface: 16001\n";
+        let zip = s.zip("Mine.zip", &[("Mine/Mine.toc", toc), ("Shared/Shared.toc", toc), ("Shared/evil.lua", b"replaced")]);
+        let err = s.install(&zip, &st, &Catalog::default(), false).unwrap_err();
+        assert!(err.contains("cannot replace addon folder Shared: it belongs to github:a/Shared"), "{err}");
+        assert_eq!(fs::read_to_string(shared.join("keep.lua")).unwrap(), "installed from GitHub");
+        assert!(!shared.join("evil.lua").exists());
+        assert_eq!(s.addon_folders(), vec!["Shared"], "nothing else was placed either");
+    }
+
+    #[test]
+    fn a_malformed_zip_from_disk_is_refused_by_the_same_checks_as_a_download() {
+        let toc: &[u8] = b"## Interface: 16001\n## Version: 1\n";
+        let cases: &[(&str, &[(&str, &[u8])], &str)] = &[
+            ("stream", &[("Foo/Foo.toc", toc), ("Foo/notes.lua:payload.exe", b"MZ")], "cannot store"),
+            ("device", &[("Foo/Foo.toc", toc), ("Foo/CON", b"x")], "cannot store"),
+            ("escape", &[("Foo/Foo.toc", toc), ("../escape.lua", b"x")], "unsafe path"),
+            ("exe", &[("Foo/Foo.toc", toc), ("Foo/helper.exe", b"MZ\0\0")], "SAFETY"),
+            ("disguised", &[("Foo/Foo.toc", toc), ("Foo/readme", b"MZ\x90\0")], "Windows executable in disguise"),
+            ("nameless", &[("Wrap-1.0/.toc", toc), ("Wrap-1.0/x.lua", b"x")], "suspicious folder name"),
+            ("twice", &[("Shared-1.0/Shared.toc", toc), ("Shared-2.0/Shared_Forever.toc", toc)], "two addon folders named Shared"),
+            ("no-toc", &[("Foo/readme.txt", b"x")], "none contains a .toc"),
+        ];
+        for (name, entries, expect) in cases {
+            let s = Scratch::new(name);
+            let keep = s.addons().join("Keep");
+            fs::create_dir_all(&keep).unwrap();
+            fs::write(keep.join("Keep.toc"), "## Interface: 16001\n").unwrap();
+            let zip = s.zip(&format!("{name}.zip"), entries);
+            let err = s.install(&zip, &AppState::default(), &Catalog::default(), true).unwrap_err();
+            assert!(err.contains(expect), "{name}: {err}");
+            assert_eq!(s.addon_folders(), vec!["Keep"], "{name}: AddOns is as it was");
+            assert!(keep.join("Keep.toc").exists());
+            assert!(!s.root.join("escape.lua").exists() && !s.addons().join("escape.lua").exists(), "{name}");
+            assert_eq!(s.staged_left(), 0, "{name}: no staged copy is left");
+            assert!(zip.exists(), "{name}: the user's zip is left alone");
+        }
+        // Not a zip at all, whatever its name says.
+        let s = Scratch::new("garbage");
+        let fake = s.downloads.join("Addon.zip");
+        fs::write(&fake, "this is not a zip").unwrap();
+        let err = s.install(&fake, &AppState::default(), &Catalog::default(), true).unwrap_err();
+        assert!(err.contains("not a valid zip"), "{err}");
+        assert!(s.addon_folders().is_empty());
+        assert_eq!(s.staged_left(), 0);
+        // And only a .zip is taken at all.
+        let txt = s.downloads.join("notes.txt");
+        fs::write(&txt, "text").unwrap();
+        assert!(s.install(&txt, &AppState::default(), &Catalog::default(), true).unwrap_err().contains("choose a .zip file"));
+    }
+
+    #[test]
+    fn a_zip_with_no_forever_toc_asks_before_installing() {
+        let s = Scratch::new("flavour");
+        let zip = s.zip("Classic.zip", &[("Classic/Classic.toc", b"## Interface: 11507\n## Version: 2.0\n")]);
+        let err = s.install(&zip, &AppState::default(), &Catalog::default(), false).unwrap_err();
+        assert_eq!(err, "NOT_FOREVER", "the UI asks the same question as for a download");
+        assert!(s.addon_folders().is_empty(), "nothing moved before the question");
+        let (_, rec) = s.install(&zip, &AppState::default(), &Catalog::default(), true).unwrap();
+        assert_eq!(rec.folders, vec!["Classic"]);
+        // A Forever TOC is enough, interface number or not.
+        let zip = s.zip("Forever.zip", &[("Forever/Forever_Forever.toc", b"## Version: 1\n")]);
+        assert!(s.install(&zip, &AppState::default(), &Catalog::default(), false).is_ok());
+    }
+
+    #[test]
+    fn a_newer_curseforge_release_of_a_zip_install_is_reported_never_offered() {
+        let listing = |id: u64, name: &str| -> sources::curseforge::ModInfo {
+            serde_json::from_value(serde_json::json!({
+                "id": id,
+                "latestFiles": [{
+                    "id": 1, "displayName": name, "fileName": format!("{name}.zip"), "releaseType": 1,
+                    "fileDate": "2026-11-01T00:00:00Z",
+                    "sortableGameVersions": [{ "gameVersionTypeId": sources::curseforge::FOREVER_TYPE }]
+                }]
+            }))
+            .unwrap()
+        };
+        sources::curseforge::remember_for_tests(&[
+            listing(990011, "NetherSuite-1.3.0"),
+            listing(990012, "NetherSuite-1.2.3"),
+            listing(990013, "NetherSuite-1.2.0"),
+        ]);
+        let from_zip = |id: u64| {
+            let mut st = AppState::default();
+            st.installed.insert(
+                format!("curse:{id}"),
+                Installed {
+                    source: LOCAL_SOURCE.into(),
+                    source_id: "NetherSuite-1.2.3.zip".into(),
+                    version: "1.2.3".into(),
+                    folders: vec!["NetherSuite".into()],
+                    installed_at: 0,
+                },
+            );
+            let folder = AddonFolder {
+                folder: "NetherSuite".into(),
+                title: "NetherSuite".into(),
+                version: Some("1.2.3".into()),
+                curse: Some(id),
+                interfaces: vec![16001],
+                forever_interface: true,
+                ..Default::default()
+            };
+            let mut p = build_packages(&st, &Catalog::default(), &[folder]).remove(0);
+            assert_eq!(p.status, "local");
+            curse_listing_into(&mut p, false);
+            p
+        };
+        let newer = from_zip(990011);
+        assert_eq!(newer.status, "curse-update");
+        assert_eq!(newer.note, "NetherSuite-1.3.0 is on CurseForge; you have 1.2.3. Open its page to download it, then use Install from zip.");
+        assert_eq!(newer.source, None, "reported, never offered as an update");
+        assert!(update_source(&newer).is_err());
+        for id in [990012, 990013] {
+            let p = from_zip(id);
+            assert_eq!(p.status, "local", "{id}: not newer, so nothing to do");
+            assert_eq!(p.note, local_note("NetherSuite-1.2.3.zip"), "{id}");
+        }
     }
 }

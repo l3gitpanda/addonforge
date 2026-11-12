@@ -33,6 +33,7 @@ On top of that there is a **catalogue**: [`catalog/forever.json`](catalog/foreve
 - Finds your WoW: Forever install and lists every addon in it, grouped properly (BigWigs and its twelve zone folders are one row).
 - Checks for updates in parallel, straight from where each author publishes.
 - Installs from the catalogue, from **any GitHub repo** you paste in, or from a **CurseForge search** covering every Forever addon they list (with your own CurseForge API key, added in Settings).
+- Installs a **zip you downloaded yourself** (Install from zip… in My addons, or drop it on the window), with the same safety checks as a download. That is the way in for addons whose authors allow only CurseForge's own app. AddonForge keeps track of them but never updates them; it still tells you when CurseForge lists a newer version.
 - Tells you when an addon is missing a required dependency, with a one-click install if the catalogue knows it.
 - Pin an addon to hold it at its current version. Ignore one to hide it.
 - Optional pre-release toggle for authors who only ship Forever builds as betas.
@@ -49,7 +50,8 @@ On top of that there is a **catalogue**: [`catalog/forever.json`](catalog/foreve
 | Wago Addons | Link only | Wago gives updater keys to its Patreon supporters only, so AddonForge no longer installs from Wago. Entries that live only there link to their Wago page. |
 | WoWInterface | No | Public JSON API. |
 | TukUI | No | ElvUI / Tukui. |
-| CurseForge | Your own | Search all Forever addons on CurseForge and install the ones whose authors allow third-party downloads (about seven in ten of the popular ones). Needs a CurseForge API key of your own, added in Settings: CurseForge issues each key to one person and does not allow it to be passed on, so this fork does not ship one. The key is tested once, then kept in Windows Credential Manager (macOS: the Keychain), never in the settings file, log, diagnostics or an exported list, and is sent only to CurseForge: api.curseforge.com, and its download servers (forgecdn.net) when a file is fetched. API responses aren't cached on disk; the only CurseForge data AddonForge keeps is the project id and version name of what you installed, in its settings and log. Opted-out addons are link only. Details: [docs/PROVIDER_INTEGRATIONS.md](docs/PROVIDER_INTEGRATIONS.md). |
+| CurseForge | Your own | Search all Forever addons on CurseForge and install the ones whose authors allow third-party downloads (about seven in ten of the popular ones). Needs a CurseForge API key of your own, added in Settings: CurseForge issues each key to one person and does not allow it to be passed on, so this fork does not ship one. The key is tested once, then kept in Windows Credential Manager (macOS: the Keychain), never in the settings file, log, diagnostics or an exported list, and is sent only to CurseForge: api.curseforge.com, and its download servers (forgecdn.net) when a file is fetched. API responses aren't cached on disk; the only CurseForge data AddonForge keeps is the project id and version name of what you installed, in its settings and log. Opted-out addons are link only: download the zip on their page and use Install from zip. Details: [docs/PROVIDER_INTEGRATIONS.md](docs/PROVIDER_INTEGRATIONS.md). |
+| Zip file | No | A zip you downloaded yourself. Installed through the same checks as a download, kept track of, never updated. Nothing is fetched. |
 
 ## Build
 

@@ -12,8 +12,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Installed {
-    /// Source kind: github | wago | wowi | tukui
+    /// Source kind: github | wago | wowi | tukui | curse, or `local` for a zip
+    /// the user installed from disk (never updated by the app).
     pub source: String,
+    /// The source's id; for `local`, the zip's file name.
     pub source_id: String,
     pub version: String,
     pub folders: Vec<String>,
