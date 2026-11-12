@@ -1,6 +1,6 @@
 //! Addon sources. Each resolves "what is the latest release and where is
 //! the zip" for one addon. The app talks to these sites directly over
-//! HTTPS; nothing goes through a Pocket Forge server.
+//! HTTPS; nothing goes through a server of ours.
 
 pub mod curseforge;
 pub mod github;

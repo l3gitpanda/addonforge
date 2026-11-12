@@ -21,7 +21,7 @@ use std::path::PathBuf;
 /// channel, so it never looks for, offers or installs an update of itself.
 ///
 /// This fork has none yet. The original project's channel
-/// (`github.com/Topher121/AddonForge/releases/latest/download/latest.json`) is
+/// (upstream's `releases/latest/download/latest.json`) is
 /// deliberately not used: its manifest is signed with the original's key,
 /// which this app still holds to check the catalogue, so a fork build that
 /// followed it would pass every check and replace itself with the original
@@ -31,7 +31,7 @@ pub const UPDATE_CHANNEL: Option<&str> = None;
 
 /// Where non-Windows users get sent to update by hand.
 #[cfg(not(windows))]
-pub const RELEASES_URL: &str = "https://github.com/Topher121/AddonForge/releases/latest";
+pub const RELEASES_URL: &str = "https://github.com/l3gitpanda/addonforge/releases/latest";
 
 /// What every update action answers in a build with no update channel.
 pub const OFF: &str = "This build does not update itself: the fork has no releases of its own yet";

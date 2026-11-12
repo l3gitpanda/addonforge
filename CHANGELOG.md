@@ -1,11 +1,10 @@
 # Changelog
 
-Changes made by this fork, newest first. The original project's history is in
-its own releases: <https://github.com/Topher121/AddonForge/releases>.
+Changes made in this build, newest first.
 
 ## Unreleased
 
-Forked from Topher121/AddonForge at v0.4.0 (build 31 source, commit `7bdd46b`).
+Based on AddonForge v0.4.0 (build 31 source, commit `7bdd46b`).
 
 ### Added
 

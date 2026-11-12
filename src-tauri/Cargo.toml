@@ -2,7 +2,7 @@
 name = "addonforge"
 version = "0.4.0"
 description = "Lightweight, telemetry-free addon manager for WoW: Forever"
-authors = ["Pocket Forge Studios"]
+authors = ["l3gitpanda"]
 edition = "2021"
 
 [lib]

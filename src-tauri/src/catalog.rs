@@ -10,7 +10,7 @@ use std::time::Duration;
 
 pub const BUNDLED: &str = include_str!("../../catalog/forever.json");
 pub const REMOTE_URL: &str =
-    "https://raw.githubusercontent.com/Topher121/AddonForge/main/catalog/forever.json";
+    "https://raw.githubusercontent.com/l3gitpanda/addonforge/main/catalog/forever.json";
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct CatalogEntry {
@@ -127,7 +127,7 @@ pub struct Stats {
 /// Copy shipped with the build, used when GitHub is unreachable (or before the first daily refresh).
 pub const BUNDLED_STATS: &str = include_str!("../../catalog/stats.json");
 pub const STATS_URL: &str =
-    "https://raw.githubusercontent.com/Topher121/AddonForge/main/catalog/stats.json";
+    "https://raw.githubusercontent.com/l3gitpanda/addonforge/main/catalog/stats.json";
 
 pub async fn load_stats(client: &reqwest::Client) -> Stats {
     let r = async {

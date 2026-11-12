@@ -27,10 +27,9 @@ use wow::{AddonFolder, WowInstall};
 pub const USER_AGENT: &str = concat!(
     "AddonForge/",
     env!("CARGO_PKG_VERSION"),
-    " (+https://github.com/Topher121/AddonForge)"
+    " (+https://github.com/l3gitpanda/addonforge)"
 );
-pub const REPO_URL: &str = "https://github.com/Topher121/AddonForge";
-pub const SUPPORT_EMAIL: &str = "PocketForgeStudios@proton.me";
+pub const REPO_URL: &str = "https://github.com/l3gitpanda/addonforge";
 
 struct App {
     client: reqwest::Client,
@@ -754,7 +753,6 @@ struct Settings {
     catalog_updated: Option<String>,
     catalog_count: usize,
     repo_url: String,
-    support_email: String,
     /// `ADDONFORGE_TAB=browse|settings` opens on that tab (screenshots, testing).
     start_tab: Option<String>,
     /// ForeverSVFix is set up on this install (see `wow::svfix_present`).
@@ -793,7 +791,6 @@ async fn get_settings(app: State<'_, Shared>) -> Result<Settings, String> {
         catalog_updated: cat.as_ref().map(|c| c.0.updated.clone()),
         catalog_count: cat.as_ref().map(|c| c.0.addons.len()).unwrap_or(0),
         repo_url: REPO_URL.into(),
-        support_email: SUPPORT_EMAIL.into(),
         start_tab: std::env::var("ADDONFORGE_TAB").ok().filter(|t| !t.is_empty()),
         svfix: st.install_path.as_deref().map(|p| wow::svfix_present(Path::new(p))).unwrap_or(false),
         has_curse: sources::curseforge::available(),
