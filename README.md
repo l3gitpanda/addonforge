@@ -1,10 +1,15 @@
 # AddonForge
 
-> **Private build.** A privacy-first build for personal use. There are no published releases: build it from source (see [Build](#build)). It does not update itself. What has changed is in [CHANGELOG.md](CHANGELOG.md); what is planned is in [docs/FORK_ROADMAP.md](docs/FORK_ROADMAP.md).
+> **Private build.** A privacy-first build for personal use. Windows builds are published to [Releases](https://github.com/l3gitpanda/addonforge/releases) automatically from `main`, or build it from source (see [Build](#build)). It does not update itself: get new builds from Releases. What has changed is in [CHANGELOG.md](CHANGELOG.md); what is planned is in [docs/FORK_ROADMAP.md](docs/FORK_ROADMAP.md).
 
 A small, fast addon manager for **World of Warcraft: Forever**.
 
-Windows 10/11 (and macOS from source). `npm run build` gives a portable exe; `npx tauri build` also makes an installer that installs to your user folder with a Start menu shortcut and an uninstaller, no admin rights needed.
+**[Download the latest release](https://github.com/l3gitpanda/addonforge/releases/latest)** for Windows 10/11 (macOS from source). Two flavours, same app:
+
+- `AddonForge-Setup-…exe`: installs to your user folder with a Start menu shortcut and an uninstaller. No admin rights needed.
+- `AddonForge-v…exe`: portable, run it from anywhere, nothing installed.
+
+Each release lists SHA-256 checksums in `SHA256SUMS.txt`.
 
 The Windows files are not code-signed, so SmartScreen may show an unknown-publisher warning.
 
