@@ -1,7 +1,7 @@
 //! Tiny local log: `%APPDATA%\AddonForge\addonforge.log` (macOS: `~/Library/Application Support/AddonForge`).
 //!
 //! Local only, never uploaded. Rotates once past ~1 MB (one `.1` backup).
-//! The "Report a problem" button attaches the tail of this file so bug
+//! The "Copy diagnostics" button attaches the tail of this file so bug
 //! reports arrive with something useful in them.
 
 use std::fs::{self, File, OpenOptions};

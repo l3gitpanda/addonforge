@@ -22,7 +22,7 @@ jobs:
         run: node scripts/build-stats.js
       - name: Commit if changed
         run: |
-          git config user.name "Pocket Forge Studios"
-          git config user.email "PocketForgeStudios@proton.me"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add catalog/stats.json
           git diff --cached --quiet && echo "no change" || git commit -m "stats: daily download totals" && git push

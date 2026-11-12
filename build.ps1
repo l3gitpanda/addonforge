@@ -136,13 +136,13 @@ $history = @($history | Sort-Object -Property build -Descending | Select-Object 
 WriteUtf8NoBom $historyPath (ConvertTo-Json @($history) -Depth 3)
 
 # ---- latest.json (self-update manifest) ----------------------------------
-# The app fetches https://github.com/Topher121/AddonForge/releases/latest/download/latest.json
+# The app fetches https://github.com/l3gitpanda/addonforge/releases/latest/download/latest.json
 $tag = "v$version-b$build"
 $latest = [ordered]@{
     version  = $version
     build    = $build
     filename = $name
-    url      = "https://github.com/Topher121/AddonForge/releases/download/$tag/$name"
+    url      = "https://github.com/l3gitpanda/addonforge/releases/download/$tag/$name"
     size     = (Get-Item $out).Length
     sha256   = (Get-FileHash $out -Algorithm SHA256).Hash.ToLower()
     notes    = $whatsNew

@@ -188,36 +188,24 @@
     </div>
 
     <div class="pref">
-      <div class="pref-label">Report a problem</div>
+      <div class="pref-label">Diagnostics</div>
       <div class="pref-body">
         <div class="row">
-          <button id="btn-report-gh" class="btn primary">Report on GitHub</button>
-          <button id="btn-report-mail" class="btn">Email</button>
-          <button id="btn-copy-diag" class="btn">Copy diagnostics</button>
+          <button id="btn-copy-diag" class="btn primary">Copy diagnostics</button>
           <button id="btn-open-log" class="link">Open the log file</button>
         </div>
-        <p class="hint">Builds a report with your version, install folder, addon list and the last few log lines. Your Windows username and home folder are replaced with placeholders. Pressing Report on GitHub opens a GitHub issue form with the report filled in; that sends the report text to GitHub when the page opens, and nothing is posted until you submit the form. Email opens your mail app the same way.</p>
+        <p class="hint">Builds a report with your version, install folder, addon list and the last few log lines, and copies it to your clipboard. Your Windows username and home folder are replaced with placeholders. Nothing is sent anywhere.</p>
         <pre id="diag" class="diag hidden"></pre>
-      </div>
-    </div>
-
-    <div class="pref">
-      <div class="pref-label">Discord</div>
-      <div class="pref-body">
-        <div class="row">
-          <button class="btn" data-url="https://discord.gg/2qyV5kxT9h">Join the Pocket Forge Discord</button>
-        </div>
-        <p class="hint">Ask for help, say what you'd like changed, or just talk addons. Bugs are best sent with Report a problem above so the diagnostics come with them, but a message there works too.</p>
       </div>
     </div>
 
     <div class="pref">
       <div class="pref-label">About</div>
       <div class="pref-body about">
-        <p>AddonForge <span id="version"></span> by Pocket Forge Studios.</p>
+        <p>AddonForge <span id="version"></span> (private build).</p>
         <p class="hint">No accounts, no ads, no analytics. Talks only to the addon sites (GitHub, CurseForge, WoWInterface, TukUI, and Wago for preview images). At launch it reads the catalogue and download totals from GitHub, then checks your installed addons for updates. This build does not look for updates to itself. CurseForge search and installs use your own API key (see CurseForge above); it is kept in your system's credential store and only ever sent to CurseForge's API and download servers. The only CurseForge data kept on disk is the project id and version name of what you installed.</p>
         <p class="hint">Catalogue: <span id="catalog-info">…</span><br>Settings file: <code id="state-file"></code></p>
-        <p class="hint"><a href="#" data-url="https://github.com/Topher121/AddonForge">Source code and catalogue</a> · <a href="#" data-url="https://ko-fi.com/pocketforgestudios">Support the dev</a> · <a href="#" data-url="https://discord.gg/2qyV5kxT9h">Discord</a> · <a href="#" data-url="mailto:PocketForgeStudios@proton.me">PocketForgeStudios@proton.me</a></p>
+        <p class="hint"><a href="#" data-url="https://github.com/l3gitpanda/addonforge">Source code and catalogue</a></p>
         <p class="hint">Independent project. Not affiliated with CurseForge, Overwolf, Blizzard Entertainment, Wago, WoWInterface or TukUI. World of Warcraft is a trademark of Blizzard Entertainment.</p>
       </div>
     </div>

@@ -13,7 +13,7 @@ Last updated: 12 November 2026.
 
 ## Where things stand
 
-- Forked from Topher121/AddonForge at v0.4.0 (build 31 source, commit `7bdd46b`).
+- Based on AddonForge v0.4.0 (build 31 source, commit `7bdd46b`).
   `origin` is the fork, `upstream` is the original.
 - Stack: Rust + Tauri 2 (WebView2), plain HTML/JS/CSS in `ui/` with no
   framework and no bundler. About 8,000 lines of Rust and 1,400 of JS at the fork point.
@@ -34,12 +34,12 @@ signs its own releases).
 
 | # | Problem | Where | Effect |
 |---|---|---|---|
-| 1 | ~~Self-update points at upstream~~ **Tested: off** | `selfupdate.rs` `UPDATE_CHANNEL` (`None`) | A fork build offered "Update now" to upstream's build 31 and would have replaced itself with the original app. Now no manifest is requested, nothing is offered and `apply` refuses. Verified by unit tests, by pointing the built CLI at upstream's real manifest with `--force` (refused, exe unchanged), and in the running app (no banner, no request in the log). **To turn self-update back on:** publish signed fork releases, put the fork's public key in `signing.rs`, and set `UPDATE_CHANNEL` to the fork's `latest.json`. The catalogue shares `RELEASE_PUBLIC_KEY` today, so changing the key needs #4 solved at the same time. `RELEASES_URL` (non-Windows) still names upstream and is unreachable while the channel is off; fix it with the channel. |
-| 2 | Bug reports go to upstream | `lib.rs` `REPO_URL`, `SUPPORT_EMAIL`; Discord and Ko-fi links in `ui/index.html` | "Report a problem" opens an issue on the original repo or emails its maintainer about a build they did not make. |
-| 3 | User-Agent names upstream | `lib.rs` `USER_AGENT` | Every request tells addon sites it is the original project. |
-| 4 | Catalogue and stats come from upstream | `catalog.rs` `REMOTE_URL`, `STATS_URL` | Works, and is signature-checked with upstream's key. The fork cannot change the catalogue without its own key and URL. Also a launch-time request to a repo the fork does not control. |
-| 5 | Same settings folder and app id | `state.rs` (`%APPDATA%\AddonForge`), `tauri.conf.json` `identifier` | The fork and the original share `state.json`. Either can rewrite the other's settings. |
-| 6 | Daily stats workflow | `.github/workflows/stats.yml` | If Actions are enabled on the fork, it commits to `main` every day as "Pocket Forge Studios". |
+| 1 | ~~Self-update points at upstream~~ **Tested: off** | `selfupdate.rs` `UPDATE_CHANNEL` (`None`) | A fork build offered "Update now" to upstream's build 31 and would have replaced itself with the original app. Now no manifest is requested, nothing is offered and `apply` refuses. Verified by unit tests, by pointing the built CLI at upstream's real manifest with `--force` (refused, exe unchanged), and in the running app (no banner, no request in the log). **To turn self-update back on:** publish signed fork releases, put the fork's public key in `signing.rs`, and set `UPDATE_CHANNEL` to the fork's `latest.json`. The catalogue shares `RELEASE_PUBLIC_KEY` today, so changing the key needs #4 solved at the same time. `RELEASES_URL` (non-Windows) now names the fork's releases page and is unreachable while the channel is off. |
+| 2 | ~~Bug reports go to upstream~~ **Implemented** | `lib.rs` `REPO_URL`; `ui/index.html` | `REPO_URL` is the fork. `SUPPORT_EMAIL`, the Report on GitHub and Email buttons, and the Discord and Ko-fi links are gone (the fork has issues off and is for private use). Settings keeps Copy diagnostics, which sends nothing. |
+| 3 | ~~User-Agent names upstream~~ **Implemented** | `lib.rs` `USER_AGENT` | Now names `github.com/l3gitpanda/addonforge`. |
+| 4 | Catalogue and stats come from upstream | `catalog.rs` `REMOTE_URL`, `STATS_URL` | **Partly done:** both URLs now point at the fork's `main`. The catalogue is still signature-checked with upstream's key, so it verifies only while `catalog/forever.json` and `.sig` are unchanged from upstream; editing the catalogue needs the fork's own key (the app falls back to the bundled copy when the signature fails). |
+| 5 | Same settings folder and app id | `state.rs` (`%APPDATA%\AddonForge`), `tauri.conf.json` `identifier` | **Partly done:** `identifier` is now `com.l3gitpanda.addonforge`, so the installer and WebView data no longer collide with the original. `state.json` is still in `%APPDATA%\AddonForge`, shared with the original if both are installed. |
+| 6 | Daily stats workflow | `.github/workflows/stats.yml` | **Implemented:** commits as `github-actions[bot]`. If Actions are enabled on the fork, it still commits to `main` every day. |
 | 7 | Version and build numbers | `Cargo.toml`, `tauri.conf.json`, `package.json`, `build.ps1` | Fork milestones (v0.1 to v1.0) need a scheme that cannot be confused with upstream's 0.4.0 build 31. |
 
 ## Audit so far

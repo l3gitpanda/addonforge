@@ -1,20 +1,22 @@
 # AddonForge
 
-> **This is a fork** of [Topher121/AddonForge](https://github.com/Topher121/AddonForge), being developed into a privacy-first build. It has no releases of its own yet: the download link, catalogue, Discord and support address below are still the original project's. A build of the fork does not update itself, and will not replace itself with the original's releases; what this page says about self-update describes the original's builds. What the fork changes is in [CHANGELOG.md](CHANGELOG.md); what is planned is in [docs/FORK_ROADMAP.md](docs/FORK_ROADMAP.md).
+> **Private build.** A privacy-first build for personal use. Windows builds are published to [Releases](https://github.com/l3gitpanda/addonforge/releases) automatically from `main`, or build it from source (see [Build](#build)). It does not update itself: get new builds from Releases. What has changed is in [CHANGELOG.md](CHANGELOG.md); what is planned is in [docs/FORK_ROADMAP.md](docs/FORK_ROADMAP.md).
 
 A small, fast addon manager for **World of Warcraft: Forever**.
 
-**[Download the latest release](https://github.com/Topher121/AddonForge/releases/latest)** for Windows 10/11. Two flavours, same app:
+**[Download the latest release](https://github.com/l3gitpanda/addonforge/releases/latest)** for Windows 10/11 (macOS from source). Two flavours, same app:
 
 - `AddonForge-Setup-…exe`: installs to your user folder with a Start menu shortcut and an uninstaller. No admin rights needed.
 - `AddonForge-v…exe`: portable, run it from anywhere, nothing installed.
 
-Either one updates itself when a new build is out. The Windows files are not code-signed yet, so SmartScreen may show an unknown-publisher warning. A Defender malware detection is a separate issue: if Defender blocks a file, report the build number and detection name; do not disable antivirus or add an exclusion. If AddonForge disappears after an update, the previous version is kept for one more launch (installed copy: `addonforge.exe.old` in `%LOCALAPPDATA%\AddonForge`; portable: the old file next to it), or reinstall from the releases page. Your addons and settings are not affected.
+Each release lists SHA-256 checksums in `SHA256SUMS.txt`.
+
+The Windows files are not code-signed, so SmartScreen may show an unknown-publisher warning.
 
 ![AddonForge showing installed addons with update status](docs/screenshot.png)
 
 - **Light.** A single exe on top of the WebView2 that Windows already has. No bundled browser.
-- **Private.** No account, no ads, no analytics, no server of ours in the loop. The app talks only to the sites addons are published on (GitHub, Wago, WoWInterface, TukUI, CurseForge), plus this project's GitHub repo for the catalogue and updates. The full list is under [Privacy](#code-signing-policy).
+- **Private.** No account, no ads, no analytics, no server of ours in the loop. The app talks only to the sites addons are published on (GitHub, Wago, WoWInterface, TukUI, CurseForge), plus this project's GitHub repo for the catalogue. The full list is under [Privacy](#code-signing-policy).
 - **Honest.** If an addon's author only allows downloads through CurseForge's own app, AddonForge says so and gives you the link instead of pretending.
 
 ## How it finds addons
@@ -36,13 +38,8 @@ On top of that there is a **catalogue**: [`catalog/forever.json`](catalog/foreve
 - Optional pre-release toggle for authors who only ship Forever builds as betas.
 - Export your addon list to a small file, import it on another PC or send it to a friend.
 - Refuses any zip containing a known executable or script type, or a file that starts like a Windows or macOS program or a script. Addons are Lua, XML and media, and AddonForge never runs anything from a zip.
-- Updates itself: a banner appears when a new build is out, one click swaps the exe.
-- "Report a problem" builds a diagnostics report and opens a GitHub issue form or an email with it filled in. The GitHub form gets the report in its URL, so GitHub receives the text when the page opens, though nothing is posted until you submit. Email leaves when you press send. "Copy diagnostics" shows the report without sending anything.
+- "Copy diagnostics" in Settings builds a report (version, install folder, addon list, recent log lines) and copies it, without sending anything.
 - Keeps a small local log next to its settings file, never uploaded.
-
-## How it's built
-
-Honest version: AddonForge is designed, tested and decided by one person with a design background, and most of the code is written with Claude (Anthropic's AI). Every choice about what it does and doesn't do (no accounts, no ads, no telemetry, no executables, only the AddOns folder) is the owner's, every build is tested on a real Forever install before release, and the tests run on every push. The whole thing is open source under the MIT licence precisely so you don't have to take any of that on trust: read it, run it, or don't. Bug reports and pull requests from people who read Rust are especially welcome.
 
 ## Sources
 
@@ -82,47 +79,26 @@ npx tauri build --bundles app   # src-tauri/target/release/bundle/macos/AddonFor
 ```
 
 The app isn't signed, so the first launch needs right-click → *Open*. Settings
-and the log live in `~/Library/Application Support/AddonForge`. When a new
-version is out, the update button opens the releases page instead of swapping
-the exe.
+and the log live in `~/Library/Application Support/AddonForge`.
 
-## Contributing
+## Adding addons to the catalogue
 
-Want an addon listed? See [CONTRIBUTING.md](CONTRIBUTING.md): one JSON entry and a pull request, validated automatically. Or open an "Add an addon" issue and we'll do it.
+See [CONTRIBUTING.md](CONTRIBUTING.md): one JSON entry in `catalog/forever.json`, validated by `scripts/validate-catalog.js`.
 
-## Code signing policy
+## Privacy
 
-The Windows files do not currently have a code-signing certificate. SignPath Foundation declined the initial application and invited a later reapplication as the project gains recognition.
-
-From build 27, AddonForge verifies a project signature on its update manifest and checks the downloaded executable against the manifest's SHA-256 checksum. This protects update authenticity and integrity; it is separate from Windows publisher signing.
-
-**Roles**
-- Authors, reviewers and approvers: [Project maintainer](https://github.com/Topher121/AddonForge) (sole maintainer).
-- Every signing request is approved by the maintainer before release.
-- Changes from outside contributors are reviewed by the maintainer before they are merged.
-
-**Privacy**
 AddonForge does not collect or send personal data and has no telemetry, accounts or analytics. It contacts only these hosts, and only to check versions, read addon details and download addons:
 
-- github.com, api.github.com, raw.githubusercontent.com and GitHub's release download hosts: the addon catalogue, AddonForge's own updates, and GitHub-hosted addons (addon details, README images and author avatars).
+- github.com, api.github.com, raw.githubusercontent.com and GitHub's release download hosts: the addon catalogue and GitHub-hosted addons (addon details, README images and author avatars).
 - api.curseforge.com, edge.forgecdn.net and the forgecdn.net host it hands downloads to: CurseForge addon lookups and downloads (only once you have added your own API key, and only for addons whose authors allow third-party downloads).
 - api.mmoui.com: WoWInterface addon lookups and the download hosts it returns.
 - api.tukui.org: TukUI addon lookups and the download hosts it returns.
 - media.forgecdn.net, wago.io hosts, www.wowinterface.com and cdn-wow.mmoui.com: only for the preview image, when the first screenshot in a GitHub-hosted addon's README lives there.
 
-Every request is HTTPS, and a site can redirect it to another host (GitHub's downloads do). At launch the app reads the catalogue and download totals from the original project's repo, then checks your installed addons for updates; there's no setting to turn that off yet. A fork build does not fetch an update manifest: it has no update channel of its own.
+Every request is HTTPS, and a site can redirect it to another host (GitHub's downloads do). At launch the app reads the catalogue and download totals from this repo, then checks your installed addons for updates; there's no setting to turn that off yet. It never looks for updates to itself.
 
-These requests reveal your IP address, your AddonForge version (in the User-Agent) and the addon names or IDs being checked, as with any web request. GitHub counts downloads of release files, so in the original's builds the update manifest's counter gives its maintainer a rough, anonymous count of launches; a fork build does not request that file, so it is not counted. Your CurseForge API key is sent only to CurseForge: to api.curseforge.com, and with a file download to its forgecdn.net servers, which have required it since July 2026. A request carrying the key is never allowed to be redirected anywhere else.
+These requests reveal your IP address, your AddonForge version (in the User-Agent) and the addon names or IDs being checked, as with any web request. Your CurseForge API key is sent only to CurseForge: to api.curseforge.com, and with a file download to its forgecdn.net servers, which have required it since July 2026. A request carrying the key is never allowed to be redirected anywhere else.
 
-**Scope of signing**
-Only AddonForge's own release builds are signed, and only from source in this repository. Addons installed through AddonForge are made by their own authors and are not signed by this project.
-
-## Support
-
-Bugs and ideas: use **Report a problem** in the app's Settings tab (it fills in the diagnostics), open an issue, or email PocketForgeStudios@proton.me.
-Questions, requests and chat: the [Pocket Forge Studios Discord](https://discord.gg/2qyV5kxT9h), channel #addonforge.
-If AddonForge saves you some hassle, [a tip on Ko-fi](https://ko-fi.com/pocketforgestudios) keeps the lights on. No pressure.
-
-Made by Pocket Forge Studios. MIT licensed, see [LICENSE](LICENSE).
+MIT licensed, see [LICENSE](LICENSE).
 
 AddonForge is an independent project. It is not affiliated with, endorsed by or connected to CurseForge, Overwolf, Blizzard Entertainment, Wago, WoWInterface or TukUI. World of Warcraft is a trademark of Blizzard Entertainment.
