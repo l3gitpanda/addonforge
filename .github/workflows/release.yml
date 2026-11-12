@@ -7,6 +7,10 @@ name: Release
 # Not done here, compared with build.ps1 -Release: no Defender scan and no
 # signed latest.json. Self-update is off in this fork (selfupdate.rs
 # UPDATE_CHANNEL = None), so nothing reads latest.json yet.
+#
+# Actions are pinned to commit SHAs (tag in the comment). The build job only
+# reads the repo; only the publish job, which runs no third-party code, can
+# write releases.
 
 on:
   push:
@@ -18,7 +22,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 # One release at a time, so two quick pushes cannot pick the same build number.
 concurrency:
@@ -26,17 +30,23 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
+  build:
     runs-on: windows-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 20
       - name: Security check
         run: node scripts/security-check.mjs
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
         with:
           workspaces: src-tauri
       - name: cargo test
@@ -74,24 +84,42 @@ jobs:
 
       - name: Collect release files
         shell: pwsh
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
         run: |
-          $v = "${{ steps.ver.outputs.version }}"; $b = "${{ steps.ver.outputs.build }}"
           New-Item -ItemType Directory -Force out | Out-Null
-          Copy-Item src-tauri/target/release/addonforge.exe "out/AddonForge-v$v-b$b.exe"
+          Copy-Item src-tauri/target/release/addonforge.exe "out/AddonForge-$env:TAG.exe"
           $setup = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter "*-setup.exe" | Select-Object -First 1
           if (-not $setup) { throw "NSIS installer not found" }
-          Copy-Item $setup.FullName "out/AddonForge-Setup-v$v-b$b.exe"
+          Copy-Item $setup.FullName "out/AddonForge-Setup-$env:TAG.exe"
           Get-ChildItem out -Filter *.exe | ForEach-Object {
             "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
           } | Set-Content -Encoding ascii out/SHA256SUMS.txt
           Get-Content out/SHA256SUMS.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-files
+          path: out/
+          if-no-files-found: error
+          retention-days: 3
 
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-files
+          path: out
       - name: Publish release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
         run: |
-          $tag = "${{ steps.ver.outputs.tag }}"
+          $tag = $env:TAG
           $notes = @"
           Built by GitHub Actions from $env:GITHUB_SHA.
 
