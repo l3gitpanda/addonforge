@@ -189,12 +189,7 @@ pub async fn download(
     headers: &[(&'static str, String)],
 ) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(dest_dir)?;
-    let safe: String = filename
-        .chars()
-        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
-        .collect();
-    let safe = if safe.to_ascii_lowercase().ends_with(".zip") { safe } else { format!("{safe}.zip") };
-    let path = dest_dir.join(format!("{}-{}", unique(), safe));
+    let path = staged_path(dest_dir, filename);
     let mut request = client.get(url);
     for (name, value) in headers {
         request = request.header(*name, value);
@@ -233,6 +228,61 @@ pub async fn download(
 }
 
 const MAX_DOWNLOAD: u64 = 512 * 1024 * 1024;
+
+/// Where a zip waits for its install: `<dest_dir>/<unique>-<name>.zip`, with
+/// the name reduced to plain ASCII. Used for downloads and for zips from disk.
+fn staged_path(dest_dir: &Path, filename: &str) -> PathBuf {
+    let safe: String = filename
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') { c } else { '_' })
+        .collect();
+    let safe = if safe.to_ascii_lowercase().ends_with(".zip") { safe } else { format!("{safe}.zip") };
+    dest_dir.join(format!("{}-{}", unique(), safe))
+}
+
+/// Copy a zip the user chose into `dest_dir`, where downloads wait, and return
+/// the copy. The install then reads, and afterwards deletes, its own copy:
+/// never the user's file, which can change or vanish meanwhile. Same name
+/// rules and the same 512 MB cap as a download.
+pub fn stage_local(src: &Path, dest_dir: &Path) -> anyhow::Result<PathBuf> {
+    stage_local_capped(src, dest_dir, MAX_DOWNLOAD)
+}
+
+fn stage_local_capped(src: &Path, dest_dir: &Path, max: u64) -> anyhow::Result<PathBuf> {
+    use std::io::Read as _;
+    let name = src.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+    if !name.to_ascii_lowercase().ends_with(".zip") {
+        anyhow::bail!("choose a .zip file ({name:?} is not one)");
+    }
+    let meta = fs::metadata(src).with_context(|| format!("cannot read {name}"))?;
+    if !meta.is_file() {
+        anyhow::bail!("{name} is not a file");
+    }
+    let too_big = || anyhow!("{name} is larger than {} MB; refusing", (max >> 20).max(1));
+    if meta.len() > max {
+        return Err(too_big());
+    }
+    fs::create_dir_all(dest_dir)?;
+    let path = staged_path(dest_dir, &name);
+    // A new file rather than fs::copy: Windows' copy keeps the original's
+    // modified time, and the startup sweep would take an old zip for an
+    // abandoned download while it is still being installed.
+    let copied = (|| -> anyhow::Result<()> {
+        let mut from = fs::File::open(src).with_context(|| format!("cannot read {name}"))?;
+        let mut to = fs::File::create(&path)?;
+        // The cap holds even if the file grows after it was measured.
+        if std::io::copy(&mut (&mut from).take(max + 1), &mut to)? > max {
+            return Err(too_big());
+        }
+        to.flush()?;
+        Ok(())
+    })();
+    if let Err(e) = copied {
+        let _ = fs::remove_file(&path);
+        return Err(e);
+    }
+    Ok(path)
+}
 
 /// How long a staged download may sit before startup treats it as abandoned.
 /// Long enough that another copy of the app still downloading is never disturbed.
@@ -456,6 +506,24 @@ pub fn place_locked(
     addons_dir: &Path,
     protected_folders: &HashMap<String, String>,
 ) -> anyhow::Result<Vec<String>> {
+    place_planned(zip_path, addons_dir, |_| Ok((protected_folders.clone(), ()))).map(|(installed, ())| installed)
+}
+
+/// One addon folder found in an archive that passed extraction and the
+/// safety scan: where it was extracted, and the name it will be installed as.
+pub type Found = (PathBuf, String);
+
+/// Like `place_locked`, for an install that can only decide what it is once it
+/// has seen the archive (a zip from disk: which package it is, whether it is
+/// for Forever). `plan` runs after extraction, the safety scan and the folder
+/// name checks, and before anything in AddOns moves. It returns the folder
+/// owners to protect, plus whatever the caller wants back; an error from it
+/// stops the install with nothing changed. The caller holds the addons lock.
+pub fn place_planned<T>(
+    zip_path: &Path,
+    addons_dir: &Path,
+    plan: impl FnOnce(&[Found]) -> anyhow::Result<(HashMap<String, String>, T)>,
+) -> anyhow::Result<(Vec<String>, T)> {
     fs::create_dir_all(addons_dir)?;
     let work = addons_dir.join(TMP_DIR).join(unique());
     let extract_dir = work.join("x");
@@ -467,7 +535,7 @@ pub fn place_locked(
     // kept in the work folder for clean_tmp to recover on the next start.
     let keep_backups = std::cell::Cell::new(false);
 
-    let result = (|| -> anyhow::Result<Vec<String>> {
+    let result = (|| -> anyhow::Result<(Vec<String>, T)> {
         let file = fs::File::open(zip_path)?;
         let mut archive = zip::ZipArchive::new(file).context("not a valid zip")?;
         extract_limited(&mut archive, &extract_dir).context("extract failed")?;
@@ -480,7 +548,7 @@ pub fn place_locked(
             .collect::<std::io::Result<_>>()?;
         // Resolve every final target before moving any installed folder aside.
         let mut targets: HashSet<String> = HashSet::new();
-        let sources: Vec<(PathBuf, String)> = addon_dirs(&extract_dir)?
+        let sources: Vec<Found> = addon_dirs(&extract_dir)?
             .into_iter()
             .map(|src| {
                 let original = src.file_name().ok_or_else(|| anyhow!("bad folder name"))?
@@ -490,19 +558,22 @@ pub fn place_locked(
                 if name.is_empty() || name.starts_with('.') || name.contains("..") || unsafe_name(&name) {
                     anyhow::bail!("refusing suspicious folder name {name:?}");
                 }
-                let lower = name.to_ascii_lowercase();
                 // Two folders landing on one name: the second would replace the first.
-                if !targets.insert(lower.clone()) {
+                if !targets.insert(name.to_ascii_lowercase()) {
                     anyhow::bail!("the archive has two addon folders named {name}; refusing to guess which one is meant");
-                }
-                if on_disk.contains(&lower) {
-                    if let Some(owner) = protected_folders.get(&lower) {
-                        anyhow::bail!("cannot replace addon folder {name}: it belongs to {owner}");
-                    }
                 }
                 Ok((src, name))
             })
             .collect::<anyhow::Result<_>>()?;
+        let (protected_folders, planned) = plan(&sources)?;
+        for (_, name) in &sources {
+            let lower = name.to_ascii_lowercase();
+            if on_disk.contains(&lower) {
+                if let Some(owner) = protected_folders.get(&lower) {
+                    anyhow::bail!("cannot replace addon folder {name}: it belongs to {owner}");
+                }
+            }
+        }
         let mut moved: Vec<(PathBuf, PathBuf)> = Vec::new(); // (target, backup)
         let mut installed = Vec::new();
 
@@ -533,7 +604,7 @@ pub fn place_locked(
             }
             installed.push(name);
         }
-        Ok(installed)
+        Ok((installed, planned))
     })();
 
     if !keep_backups.get() {
@@ -1089,6 +1160,90 @@ mod recovery_tests {
         assert!(dir.join("notes.txt").exists());
         assert!(dir.join("folder.zip").is_dir());
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_zip_from_disk_is_installed_from_a_copy_and_the_users_file_is_kept() {
+        let root = scratch("local");
+        let addons = root.join("AddOns");
+        let downloads = root.join("Downloads");
+        fs::create_dir_all(&downloads).unwrap();
+        let original = downloads.join("Nether Suite (1.2).zip");
+        fs::copy(zip_file(&root, &[("NetherSuite-1.2/NetherSuite.toc", "## Version: 1.2\n"), ("NetherSuite-1.2/core.lua", "x")]), &original).unwrap();
+        // Downloaded a week ago: older than the startup sweep's limit.
+        let week_ago = SystemTime::now() - std::time::Duration::from_secs(7 * 24 * 3600);
+        fs::File::options().write(true).open(&original).unwrap().set_modified(week_ago).unwrap();
+        let before = fs::read(&original).unwrap();
+        let staging = root.join("staging");
+        let staged = stage_local(&original, &staging).unwrap();
+        assert!(staged.starts_with(&staging));
+        let staged_name = staged.file_name().unwrap().to_string_lossy().to_string();
+        assert!(staged_name.ends_with("-Nether_Suite__1.2_.zip"), "{staged_name}");
+        assert_eq!(fs::read(&staged).unwrap(), before);
+        // A fresh file: the startup sweep must not take it for an old download.
+        assert!(fs::metadata(&staged).unwrap().modified().unwrap().elapsed().unwrap() < std::time::Duration::from_secs(60));
+        assert_eq!(place(&staged, &addons, &HashMap::new()).unwrap(), vec!["NetherSuite"]);
+        assert!(addons.join("NetherSuite").join("core.lua").exists());
+        assert!(!staged.exists(), "the staged copy goes once it is installed");
+        assert_eq!(fs::read(&original).unwrap(), before, "the user's own zip is never changed or removed");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_a_zip_file_is_staged() {
+        let root = scratch("local-refused");
+        let staging = root.join("staging");
+        let left_behind = || fs::read_dir(&staging).map(|d| d.count()).unwrap_or(0);
+        fs::write(root.join("notes.txt"), "not an archive").unwrap();
+        let err = stage_local(&root.join("notes.txt"), &staging).unwrap_err().to_string();
+        assert!(err.contains("choose a .zip file"), "{err}");
+        fs::create_dir_all(root.join("folder.zip")).unwrap();
+        assert!(stage_local(&root.join("folder.zip"), &staging).unwrap_err().to_string().contains("not a file"));
+        assert!(stage_local(&root.join("missing.zip"), &staging).is_err());
+        fs::write(root.join("big.zip"), vec![0u8; 64]).unwrap();
+        let err = stage_local_capped(&root.join("big.zip"), &staging, 63).unwrap_err().to_string();
+        assert!(err.contains("larger than"), "{err}");
+        assert_eq!(left_behind(), 0, "nothing is left in the staging folder");
+        assert!(stage_local_capped(&root.join("big.zip"), &staging, 64).is_ok(), "exactly the cap is allowed");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_plan_sees_only_archives_that_passed_every_check_and_can_still_stop_the_install() {
+        let (root, addons) = addons_with_existing("Core");
+        // A plan that refuses: nothing in AddOns changes, and the staged zip is gone.
+        let zip = zip_file(&root, &[("Core-2.0/Core_Forever.toc", "## Version: 2\n"), ("Core-2.0/new.lua", "new")]);
+        let mut seen = Vec::new();
+        let err = place_planned::<()>(&zip, &addons, |found| {
+            seen = found.iter().map(|(_, name)| name.clone()).collect::<Vec<_>>();
+            Err(anyhow!("NOT_FOREVER"))
+        })
+        .unwrap_err();
+        assert_eq!(err.to_string(), "NOT_FOREVER");
+        assert_eq!(seen, vec!["Core"], "the plan sees the name the folder installs under");
+        assert_eq!(fs::read_to_string(addons.join("Core").join("keep.lua")).unwrap(), "the user's copy");
+        assert!(!zip.exists());
+        assert!(!addons.join(TMP_DIR).exists(), "the work folder is cleared");
+        // An archive that fails a check never reaches the plan.
+        let mut called = false;
+        let zip = zip_file(&root, &[("Core/Core.toc", "## Version: 3\n"), ("Core/helper.exe", "MZ")]);
+        let err = place_planned(&zip, &addons, |_| {
+            called = true;
+            Ok((HashMap::new(), ()))
+        })
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("SAFETY"), "{err}");
+        assert!(!called);
+        assert_eq!(fs::read_to_string(addons.join("Core").join("keep.lua")).unwrap(), "the user's copy");
+        // The owners the plan returns are enforced like any others.
+        let zip = zip_file(&root, &[("Core/Core.toc", "## Version: 3\n")]);
+        let err = place_planned(&zip, &addons, |_| Ok((HashMap::from([("core".to_string(), "github:a/Core".to_string())]), ())))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("cannot replace addon folder Core: it belongs to github:a/Core"), "{err}");
+        assert_eq!(fs::read_to_string(addons.join("Core").join("keep.lua")).unwrap(), "the user's copy");
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]

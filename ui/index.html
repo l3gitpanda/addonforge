@@ -41,6 +41,7 @@
       <input id="installed-filter" type="search" placeholder="Search addons" aria-label="Search installed addons">
       <select id="installed-view" aria-label="Filter addons"><option value="all">All addons</option><option value="updates">Updates</option><option value="attention">Needs attention</option></select>
       <span class="grow"></span>
+      <button id="btn-install-zip" class="btn" title="Install an addon from a .zip you downloaded yourself, for example one only CurseForge's own app may download. You can also drop the zip on this window">Install from zip…</button>
       <button id="btn-rescan" class="btn" title="Read the AddOns folder again">Rescan</button>
       <button id="btn-check" class="btn">Check for updates</button>
       <button id="btn-update-all" class="btn primary" disabled>Update all</button>
@@ -214,6 +215,7 @@
 
 <footer class="statusbar"><span id="install-line">Looking for your installation…</span><button class="link" id="footer-open-folder">Open AddOns folder</button></footer>
 <div id="toast" class="toast" role="status" aria-live="polite"></div>
+<div id="drop-zone" class="drop-zone hidden" aria-hidden="true"><div class="drop-card"><b>Drop to install</b><span>Each .zip goes through the same safety checks as a download. AddonForge won't update it afterwards.</span></div></div>
 <div id="detail" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="detail-name">
   <div class="modal-card detail-card">
     <button id="detail-close" class="link close" aria-label="Close">&times;</button>

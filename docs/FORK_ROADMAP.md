@@ -33,6 +33,13 @@ Last updated: 12 November 2026.
   app only", "needs API key", "no Forever file", "Wago only") instead of a
   bare "link only", after an opted-out addon (NetherSuite) looked like a
   broken key. After it: `cargo test` 128 passed, 2 ignored; UI checks pass.
+- Fifth change, branch `claude/festive-cori-e57496` (on top of
+  `phase1-audit`): **install from a zip file**, for addons whose authors allow
+  only CurseForge's own app. The user downloads the zip in a browser;
+  AddonForge installs a copy through the same hardened path as a download and
+  records it as managed with source `local`, never updated by the app. See
+  [PROVIDER_INTEGRATIONS.md](PROVIDER_INTEGRATIONS.md#local-zip-file). After
+  it: `cargo test` 138 passed, 2 ignored; UI checks pass; security check OK.
 - With the owner's real key (12 November 2026), CLI search works and returns
   `allowModDistribution` as expected: every opted-out result is link only,
   every allowed one resolves to a download. A download and install with
@@ -66,7 +73,7 @@ Read closely by the fork:
 | Build-time key | `build.rs` | Plain constant in the binary. Off unless a key file or env var is supplied. |
 | HTTP client | `lib.rs` `make_app` | One shared `reqwest` client: HTTPS only on every hop, 10 redirect limit, 120 s timeout. No per-provider switch, no offline mode, no request log. |
 | Download | `install.rs` `download` | 512 MB cap, sanitised file name, staged outside the AddOns folder. Partial and abandoned zips are now removed (AUDIT A5). |
-| Install path | `install.rs` | Extraction limits, safety scan, placement, rollback, recovery, junctions. Hardened: names Windows stores differently (alternate data streams, devices, trailing dots) and empty or duplicate target folders are refused. See [AUDIT.md](AUDIT.md). |
+| Install path | `install.rs` | Extraction limits, safety scan, placement, rollback, recovery, junctions. Hardened: names Windows stores differently (alternate data streams, devices, trailing dots) and empty or duplicate target folders are refused. See [AUDIT.md](AUDIT.md). A zip from disk (`stage_local`, `place_planned`) goes through the same path; `place_planned` only adds a hook that runs after the checks and before anything moves. |
 | Removal | `recycle.rs`, `install.rs` | Links unlinked before the shell call. Network-share paths fixed (A7). Open: replaced unmanaged folders are deleted, not recycled (O3); unverified behaviour on drives with no Recycle Bin (O6). |
 | WTF backup | `backup.rs` | Atomic, skips links. Open: Documents may be synced to OneDrive (O5). |
 | Self-update and signing | `selfupdate.rs`, `signing.rs` | Sound and dormant. Filename check tightened (U1). |
@@ -129,7 +136,8 @@ off.
 | Provider trait | Not started | Replace the `match` in `sources/mod.rs` with a trait: search, metadata, versions, resolve, download headers, limits. `curseforge::download_headers` is the first provider-specific download hook and shows the shape. |
 | CurseForge | Implemented; live use **unverified** | Needs a real key. See PROVIDER_INTEGRATIONS.md for the open questions. |
 | Wago | Not started | Re-check whether user-supplied keys are allowed. Link fallback exists. |
-| GitLab, Codeberg, local zip, HTTPS archive | Not started | |
+| Local zip | **Tested** | `--cli install-zip`, Install from zip… in My addons, or drop a zip on the window. Same install path as a download; recorded as managed, source `local`, never updated; a CurseForge id in its TOC keeps the "newer on CurseForge" notice. Verified by unit tests (`install.rs`, `lib.rs` `local_zip_tests`, malformed archives included), UI checks with Tauri stubbed, the CLI end to end against a throwaway game folder, and a screenshot of the window. Not driven by hand: the file dialog and a real drop. |
+| GitLab, Codeberg, HTTPS archive | Not started | |
 | Source choice per addon, preferences, dedupe, explicit source switching | Partly upstream | A source picker exists on catalogue rows. Not audited. |
 | Release channels | Partly upstream | One global pre-release toggle. |
 
@@ -167,6 +175,12 @@ screenshots the window and closes it. Two things to know: the credential store
 is per Windows user, not per settings folder; and the app still finds and
 selects the real WoW folder, which it reads but does not change until something
 is installed.
+
+Installs can be tried without the real game folder: make
+`<dir>\_forever_\Interface\AddOns`, then, with `ADDONFORGE_STATE_DIR` set,
+run `--cli use <dir>\_forever_` once. That throwaway profile then manages only
+the throwaway folder, for the CLI and the window alike. The update check at
+launch still uses the CurseForge key in the credential store, if there is one.
 
 ## Next, in order
 

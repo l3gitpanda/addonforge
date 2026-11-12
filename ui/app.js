@@ -158,6 +158,7 @@ function badge(p) {
     "curse-update": "Update on CurseForge",
     error: failedUpdate(p) ? "Update failed" : "Error",
     "curse-only": "CurseForge only",
+    local: "From a zip file",
     "no-source": "No source",
     "no-key": "Needs Wago key",
     unknown: "Not checked",
@@ -166,7 +167,7 @@ function badge(p) {
   return `<span class="badge ${p.status}">${p.status === "checking" ? '<span class="spinner"></span> ' : ""}${map[p.status] || p.status}</span>`;
 }
 
-const installedStatusOrder = { error: 0, update: 1, "curse-update": 1.5, checking: 2, unknown: 3, ok: 4, "curse-only": 5, "no-key": 6, "no-source": 7 };
+const installedStatusOrder = { error: 0, update: 1, "curse-update": 1.5, checking: 2, unknown: 3, ok: 4, local: 4.5, "curse-only": 5, "no-key": 6, "no-source": 7 };
 const installedStatusRank = (p) => p.status === "update" && p.pinned ? 8 : installedStatusOrder[p.status] ?? 8;
 
 function installedSourceLabel(p) {
@@ -254,9 +255,11 @@ function renderInstalled() {
             p.ignored ? `<span class="badge managed">ignored</span>` : "",
           ].filter(Boolean).join(" ");
           const sourceLabel = installedSourceLabel(p);
+          // A zip install names the file it came from; its link, if any, is the addon's page.
+          const srcTip = p.from_zip ? ` title="${esc(`Installed from ${p.from_zip}${p.source_url ? ". The link opens its page" : ""}`)}"` : "";
           const src = p.source_url
-            ? `<a href="#" data-url="${esc(p.source_url)}">${esc(sourceLabel)}</a>`
-            : `<span class="muted">${esc(sourceLabel || "—")}</span>`;
+            ? `<a href="#" data-url="${esc(p.source_url)}"${srcTip}>${esc(sourceLabel)}</a>`
+            : `<span class="muted"${srcTip}>${esc(sourceLabel || "—")}</span>`;
           // A link-only row has a source we are not allowed to download from,
           // so it never offers Install or Update.
           const canUpdate = p.source && !["no-key", "curse-only", "curse-update"].includes(p.status);
@@ -634,7 +637,7 @@ function installSources(e) {
 // the whole sentence for its tooltip and the details pane. It says whose
 // choice it was, so a working CurseForge key is never blamed for an author's setting.
 const LINK_ONLY = {
-  author: { label: "CurseForge app only", tip: "Its author lets only CurseForge's own app download it, so AddonForge can't. An API key can't change that. The link opens its CurseForge page." },
+  author: { label: "CurseForge app only", tip: "Its author lets only CurseForge's own app download it, so AddonForge can't. An API key can't change that. The link opens its CurseForge page: download the zip there yourself, then use Install from zip in My addons." },
   key: { label: "needs API key", tip: "On CurseForge: add your CurseForge API key in Settings to install it here. The link opens its page meanwhile." },
   "no-forever": { label: "no Forever file", tip: "CurseForge has no WoW: Forever release of it. The link opens its page." },
   wago: { label: "Wago only", tip: "Only on Wago, whose download keys are for its Patreon supporters, so AddonForge can't download it. The link opens its page." },
@@ -1092,6 +1095,102 @@ async function installGithub(allowNonForever = false) {
   }
 }
 $("btn-gh-install").onclick = () => installGithub(false);
+
+// ---------------------------------------------------------------- install from a zip on disk
+// For an addon AddonForge may not download (its author allows only CurseForge's
+// own app): the user downloads the zip in a browser, and it is installed from
+// disk through the same checks as a download. AddonForge never updates it.
+const isZip = (path) => /\.zip$/i.test(String(path || ""));
+const fileName = (path) => String(path || "").split(/[\\/]/).pop();
+
+/// One zip. Asks "install anyway?" when it has no Forever TOC, like a download.
+async function installZipFile(path, allowNonForever = false) {
+  try {
+    return { package: await invoke("install_zip", { path, allowNonForever }) };
+  } catch (err) {
+    if (String(err) === "NOT_FOREVER") {
+      const ok = await confirmModal(`<p><b>${esc(fileName(path))}</b> has no Forever TOC.</p><p class="muted">It may still work, or it may error in game. Install it anyway?</p>`, "Install anyway");
+      return ok ? installZipFile(path, true) : { skipped: true };
+    }
+    return { error: explainError(err) };
+  }
+}
+
+/// Paths picked in the dialog or dropped on the window; anything but a .zip is left alone.
+async function installZips(paths) {
+  if (busy) return toast("AddonForge is busy; try again when it has finished", true);
+  const zips = paths.filter(isZip);
+  const others = paths.length - zips.length;
+  if (!zips.length) return toast("Only .zip files can be installed", true);
+  const done = [];
+  const failed = [];
+  setBusy(true);
+  try {
+    for (const path of zips) {
+      const r = await installZipFile(path);
+      if (r.package) done.push(r.package);
+      else if (r.error) failed.push(`${fileName(path)}: ${r.error}`);
+    }
+    if (done.length) {
+      // Other rows keep what the last check found; the new ones are as installed.
+      await rescan(true);
+      for (const p of done) {
+        const i = packages.findIndex((x) => x.key === p.key);
+        if (i >= 0) packages[i] = p;
+        const entry = catalog.find((c) => c.id === p.catalog_id);
+        if (entry) entry.installed = true;
+        for (const row of curse.rows) if (row.id === p.curse_id) row.installed = true;
+      }
+      renderInstalled();
+      if (catalog.length) renderCatalog();
+      renderCurseRows();
+      document.querySelector('.tab[data-tab="installed"]')?.click?.();
+    }
+  } finally {
+    setBusy(false);
+  }
+  const parts = [];
+  if (done.length === 1) {
+    const p = done[0];
+    parts.push(`Installed ${p.name}${p.installed_version ? " " + p.installed_version : ""} from a zip file. AddonForge won't update it: install a newer zip the same way`);
+  } else if (done.length) parts.push(`Installed ${done.length} addons from zip files. AddonForge won't update them`);
+  if (failed.length) parts.push(`Not installed: ${failed.join("; ")}`);
+  if (others) parts.push(`${others} file${others === 1 ? " was" : "s were"} not a .zip and left alone`);
+  if (!parts.length) return; // the only zip was declined at "install anyway?"
+  const msg = parts.join(". ");
+  toast(done.length ? svfixReminder(msg) : msg, failed.length > 0 || (!done.length && others > 0));
+}
+
+$("btn-install-zip").onclick = async () => {
+  if (busy) return;
+  let picked;
+  try {
+    picked = await T.dialog.open({ title: "Install an addon from a zip file", multiple: true, directory: false, filters: [{ name: "Zip archive", extensions: ["zip"] }] });
+  } catch (err) {
+    return toast(String(err), true);
+  }
+  if (!picked || (Array.isArray(picked) && !picked.length)) return;
+  await installZips(Array.isArray(picked) ? picked : [picked]);
+};
+
+// Dropping zips on the window installs them too. The webview only learns a
+// dropped file's path from Tauri's drag-drop events (core:event, already allowed).
+function showDropZone(show) {
+  $("drop-zone").classList.toggle("hidden", !show);
+}
+function onDragEnter(e) {
+  showDropZone((e?.payload?.paths || []).some(isZip));
+}
+function onDrop(e) {
+  showDropZone(false);
+  const paths = e?.payload?.paths || [];
+  if (paths.length) return installZips(paths);
+}
+if (T.event?.listen) {
+  T.event.listen("tauri://drag-enter", onDragEnter).catch(() => {});
+  T.event.listen("tauri://drag-leave", () => showDropZone(false)).catch(() => {});
+  T.event.listen("tauri://drag-drop", onDrop).catch(() => {});
+}
 
 // ---------------------------------------------------------------- settings
 async function loadSettings() {
