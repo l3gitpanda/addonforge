@@ -120,7 +120,7 @@ async fn source_archive(client: &reqwest::Client, repo: &str, rel: &ApiRelease) 
     let pkgmeta = format!("https://raw.githubusercontent.com/{repo}/{tag}/.pkgmeta");
     if let Ok(resp) = client.get(&pkgmeta).send().await {
         if resp.status().is_success() {
-            let text = resp.text().await.unwrap_or_default();
+            let text = crate::net::text(resp, crate::net::TEXT_LIMIT).await.unwrap_or_default();
             if text.lines().any(|l| l.trim_start().starts_with("externals")) {
                 anyhow::bail!(
                     "release {tag} has no packaged zip, and this addon bundles libraries only when packaged; ask the author to attach the packaged zip to the GitHub release"
@@ -148,7 +148,7 @@ async fn from_api_release(
     if let Some(rj_asset) = rel.assets.iter().find(|a| a.name == "release.json") {
         if let Ok(resp) = client.get(&rj_asset.browser_download_url).send().await {
             if resp.status().is_success() {
-                if let Ok(rj) = resp.json::<ReleaseJson>().await {
+                if let Ok(rj) = crate::net::json::<ReleaseJson>(resp).await {
                     let assets = &rel.assets;
                     let url_for = |name: &str| {
                         assets
@@ -213,7 +213,7 @@ pub async fn resolve(
         if let Some(e) = api_error(resp.status().as_u16(), repo) {
             return Err(e);
         }
-        let list: Vec<ApiRelease> = resp.error_for_status()?.json().await?;
+        let list: Vec<ApiRelease> = crate::net::json(resp.error_for_status()?).await?;
         let rel = list
             .into_iter()
             .find(|r| !r.draft)
@@ -224,7 +224,7 @@ pub async fn resolve(
     let base = format!("https://github.com/{repo}/releases/latest/download/");
     let resp = client.get(format!("{base}release.json")).send().await?;
     if resp.status().is_success() {
-        let rj: ReleaseJson = resp.json().await?;
+        let rj: ReleaseJson = crate::net::json(resp).await?;
         return pick_from_release_json(rj, |name| format!("{base}{name}"), false);
     }
 
@@ -238,7 +238,7 @@ pub async fn resolve(
     if let Some(e) = api_error(resp.status().as_u16(), repo) {
         return Err(e);
     }
-    let rel: ApiRelease = resp.error_for_status()?.json().await?;
+    let rel: ApiRelease = crate::net::json(resp.error_for_status()?).await?;
     from_api_release(client, repo, rel, asset_hint).await
 }
 

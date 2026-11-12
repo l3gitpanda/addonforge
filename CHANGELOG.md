@@ -44,6 +44,27 @@ Based on AddonForge v0.4.0 (build 31 source, commit `7bdd46b`).
 - Diagnostics report whose CurseForge key is in use (your own, built in, none),
   never the key.
 
+### Security
+
+From the Phase One audit; details and the open items in `docs/AUDIT.md`.
+
+- **Archive names Windows would store differently are refused.** A zip entry
+  such as `notes.lua:payload.exe` became a hidden alternate data stream that
+  the executable check never saw. Device names (`CON`, `NUL`, `COM1`...),
+  names ending in a dot or space, and characters Windows does not allow are
+  refused too.
+- An archive whose folders resolve to an empty name, or two folders to the
+  same name, is refused before anything in AddOns moves.
+- Every reply from a server is read with a size limit (16 MB for API replies,
+  2 MB for READMEs, 4 MB for the catalogue). Before, most were read whole.
+- Remote images are decoded with a limit on their dimensions, so a small file
+  cannot claim gigabytes of pixels.
+- A download that fails part-way no longer leaves a partial zip behind, and
+  zips abandoned for more than 6 hours are removed at startup.
+- Moving a folder to the Recycle Bin works when WoW is on a network share; the
+  path handed to Windows was relative before.
+- Recovery after an interrupted install logs restored folders correctly.
+
 ### Dependencies
 
 - Added `keyring-core` 1, with `windows-native-keyring-store` 1 on Windows and

@@ -25,6 +25,10 @@ Last updated: 12 November 2026.
   `cargo test` 106 passed, 2 ignored.
 - Second change, same branch: self-update is off until the fork has its own
   update channel. After it: `cargo test` 110 passed, 2 ignored.
+- Third change, branch `phase1-audit`: the Phase One audit of the install
+  path, removal, self-update, images and every network read, with fixes and
+  malformed-archive tests. Findings in [AUDIT.md](AUDIT.md). After it:
+  `cargo test` 126 passed, 2 ignored.
 
 ## Do first: the fork still behaves as the original
 
@@ -53,16 +57,19 @@ Read closely by the fork:
 | Settings file | `state.rs` | Atomic write, `.bak` fallback, cross-process lock. Holds an unused `wago_key` field from before build 25. |
 | Build-time key | `build.rs` | Plain constant in the binary. Off unless a key file or env var is supplied. |
 | HTTP client | `lib.rs` `make_app` | One shared `reqwest` client: HTTPS only on every hop, 10 redirect limit, 120 s timeout. No per-provider switch, no offline mode, no request log. |
-| Download | `install.rs` `download` | 512 MB cap, sanitised file name, staged outside the AddOns folder. |
-| Extraction limits | `install.rs` `extract_limited` | 20,000 entries, 1 GiB expanded, `enclosed_name` for traversal. Rest of the install path not audited. |
+| Download | `install.rs` `download` | 512 MB cap, sanitised file name, staged outside the AddOns folder. Partial and abandoned zips are now removed (AUDIT A5). |
+| Install path | `install.rs` | Extraction limits, safety scan, placement, rollback, recovery, junctions. Hardened: names Windows stores differently (alternate data streams, devices, trailing dots) and empty or duplicate target folders are refused. See [AUDIT.md](AUDIT.md). |
+| Removal | `recycle.rs`, `install.rs` | Links unlinked before the shell call. Network-share paths fixed (A7). Open: replaced unmanaged folders are deleted, not recycled (O3); unverified behaviour on drives with no Recycle Bin (O6). |
+| WTF backup | `backup.rs` | Atomic, skips links. Open: Documents may be synced to OneDrive (O5). |
+| Self-update and signing | `selfupdate.rs`, `signing.rs` | Sound and dormant. Filename check tightened (U1). |
+| Images and READMEs | `icons.rs` | Host list sound on the first URL; redirects not held to it (O1). Decoding now limited (N2). |
+| Network reads | `net.rs` (new), every call site | Every reply body is now read with a size limit (N1). |
 | Webview | `tauri.conf.json`, `capabilities/default.json`, `scripts/security-check.mjs` | CSP `default-src 'self'`, no inline script, capabilities limited to core, opener, dialog. A CI gate fails the build if these weaken. |
 | CI | `.github/workflows/build.yml` | Security check, `cargo test`, UI checks on Windows and macOS. No dependency audit, licence check, secret scan or clippy. |
 
-Not audited yet (upstream; status unknown): `install.rs` beyond the two
-functions above (safety scan, placement, rollback, junction handling),
-`recycle.rs`, `backup.rs`, `selfupdate.rs`, `signing.rs`, `icons.rs` (remote
-images), `wow.rs` and `wow/detection.rs`, `catalog.rs`, `log.rs`,
-`sources/github.rs`, `wowi.rs`, `tukui.rs`, `wago.rs`, `build.ps1`, most of
+Not audited yet (upstream; status unknown): `wow.rs` and
+`wow/detection.rs`, `log.rs`, `sources/github.rs` asset selection, `wowi.rs`,
+`tukui.rs` and `wago.rs` beyond their HTTP calls, `build.ps1`, most of
 `ui/app.js`.
 
 ### Outbound hosts (from the README and the code read so far)
@@ -72,7 +79,10 @@ download hosts; `api.curseforge.com`; `edge.forgecdn.net` and the
 `forgecdn.net` host it redirects to; `api.mmoui.com` and the hosts it returns;
 `api.tukui.org` and the hosts it returns; for preview images only:
 `media.forgecdn.net`, wago.io hosts, `www.wowinterface.com`,
-`cdn-wow.mmoui.com`. Needs confirming against the code in the Phase One audit.
+`cdn-wow.mmoui.com`. Confirmed against every call site in the audit. "The
+hosts it returns" is unbounded: Wago, WoWInterface, Tukui and GitHub release
+data can name any `https` host, and any request can be redirected to one
+(AUDIT O1).
 
 At launch, by upstream's own description: catalogue, download totals, update
 manifest, then an update check of every installed addon. A fork build no longer
@@ -89,13 +99,15 @@ off.
 | Per-provider network permissions | Not started | Same gate, keyed by provider or feature. |
 | Network activity log and dashboard | Not started | Each request attributed to a provider or feature. |
 | Update-check frequency | Not started | |
-| Optional remote images | Not started | `icons.rs` fetches README images and avatars. |
+| Optional remote images | Not started | `icons.rs` fetches README images and avatars; this tells GitHub the installed addon list (AUDIT O8). |
+| Response size limits | **Tested** | `net.rs`; every reply body capped (AUDIT N1), remote image decoding limited (N2). |
 | Credentials in the OS store | **Tested** for the CurseForge key | Unit test on an in-memory store; a round trip through the real Windows Credential Manager (`cargo test -- --ignored real_credential_store`). macOS Keychain path compiles on paper only: not built or run. |
 | Credential migration from old settings | Not started | `wago_key` in `state.json` is unused: remove it, without breaking old files. |
 | Diagnostics redaction | Implemented (upstream) + key never included | Home folder and usernames replaced. Not audited further. |
 | Provider disclosures | In progress | CurseForge done in Settings and the README. |
-| Zip traversal, bombs, limits, symlinks, junctions, Unicode and case collisions, temp files, races, rollback, deletion limits | Not audited | Upstream has tests for several. Audit, then add malformed-archive tests. |
-| Update verification | Not audited | Ed25519 manifest signature + SHA-256 (upstream). Dormant while the fork has no update channel; audit before turning it on. |
+| Zip traversal, bombs, limits, symlinks, junctions, Unicode and case collisions, temp files, races, rollback, deletion limits | **Tested** (audited, hardened) | Malformed-archive tests for alternate data streams, device names, trailing dots, bombs, entry counts, symlink entries, empty and duplicate target names, case collisions, partial downloads. Not tested: absolute and drive-letter entry names (rely on the `zip` crate). Open items O3, O4, O6 in AUDIT.md. |
+| Update verification | Audited, dormant | Sound (AUDIT "Checked and sound"). Open: no freeze protection (O9). Decide with the fork's update channel. |
+| Download integrity against provider hashes | Not started | CurseForge and GitHub publish hashes that are not compared (AUDIT O2). |
 | Redirect validation | **Tested** for CurseForge | Key-bearing requests cannot leave CurseForge's hosts. Other sources: HTTPS-only and a hop limit, nothing more. |
 | External URL handling, CSP, webview boundary | Implemented (upstream), CI-gated | Not audited beyond the config. |
 | Provider metadata validation | Not audited | |
@@ -126,6 +138,7 @@ detected and shown as unsupported.
 |---|---|
 | `docs/FORK_ROADMAP.md` | This file |
 | `docs/PROVIDER_INTEGRATIONS.md` | Started (CurseForge complete; others listed) |
+| `docs/AUDIT.md` | Phase One audit: install path, removal, self-update, images, network reads |
 | `CHANGELOG.md` | Started |
 | `docs/ARCHITECTURE.md`, `docs/SECURITY.md`, `docs/PRIVACY.md`, `docs/TESTING.md` | Not started |
 
@@ -154,8 +167,13 @@ is installed.
    send things to the original project on the fork's behalf).
 2. Verify CurseForge end to end with a real key: search, install, update, an
    opted-out addon, a revoked key.
-3. Phase One audit of `install.rs`, `recycle.rs`, `selfupdate.rs`, `icons.rs`,
-   and the full list of outbound requests.
-4. The network gate: offline mode, startup switches, per-provider permissions,
-   activity log. One design, since they share an enforcement point.
+3. ~~Phase One audit of `install.rs`, `recycle.rs`, `selfupdate.rs`,
+   `icons.rs`, and the full list of outbound requests.~~ Done: see
+   [AUDIT.md](AUDIT.md). Owner decisions it raised: O3 (recycle a replaced
+   unmanaged folder, or ask first) and O5 (where WTF backups go by default).
+4. The network gate: offline mode, startup switches, per-provider permissions
+   and allowed hosts (including on every redirect hop, AUDIT O1), optional
+   remote images (O8), activity log. One design, since they share an
+   enforcement point: `make_app`'s shared client and its redirect callback,
+   with `net.rs` as the place reads already pass through.
 5. CI: `cargo audit`, `cargo deny`, clippy, secret scanning.
