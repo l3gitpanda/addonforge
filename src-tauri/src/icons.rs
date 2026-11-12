@@ -94,6 +94,25 @@ pub fn resolve_texture(install: &Path, texture: &str) -> Option<PathBuf> {
     None
 }
 
+/// Decode an image that came over the network. The byte cap on the reply does
+/// not bound the pixels: a small PNG can declare a size that needs gigabytes
+/// to decode, so the dimensions and the allocation are limited too.
+fn decode_remote(bytes: &[u8]) -> Option<image::DynamicImage> {
+    decode_limited(bytes, REMOTE_MAX_SIDE)
+}
+
+fn decode_limited(bytes: &[u8], max_side: u32) -> Option<image::DynamicImage> {
+    let mut reader = image::ImageReader::new(std::io::Cursor::new(bytes)).with_guessed_format().ok()?;
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(max_side);
+    limits.max_image_height = Some(max_side);
+    limits.max_alloc = Some(256 * 1024 * 1024);
+    reader.limits(limits);
+    reader.decode().ok()
+}
+
+const REMOTE_MAX_SIDE: u32 = 8192;
+
 /// Icon from the addon's own files. Cached by path + mtime.
 pub fn local_icon(install: &Path, texture: &str) -> Option<String> {
     let path = resolve_texture(install, texture)?;
@@ -133,8 +152,8 @@ pub async fn remote_icon(client: &reqwest::Client, url: &str) -> Option<String> 
         .ok()?
         .error_for_status()
         .ok()?;
-    let bytes = read_capped(resp, 2 * 1024 * 1024).await.ok()?;
-    let img = image::load_from_memory(&bytes).ok()?;
+    let bytes = crate::net::read_capped(resp, 2 * 1024 * 1024).await.ok()?;
+    let img = decode_remote(&bytes)?;
     let png = encode_png(img).ok()?;
     let _ = fs::create_dir_all(cache_dir());
     let _ = fs::write(&cache, &png);
@@ -366,7 +385,7 @@ async fn latest_release_notes(client: &reqwest::Client, repo: &str) -> Result<Op
     if !r.status().is_success() {
         return Err(());
     }
-    let v = r.json::<serde_json::Value>().await.map_err(|_| ())?;
+    let v = crate::net::json::<serde_json::Value>(r).await.map_err(|_| ())?;
     let body = v.get("body").and_then(|b| b.as_str()).map(release_notes).filter(|s| !s.is_empty());
     // "bundle/v12.3.1+v1.0.9" -> "12.3.1+v1.0.9": drop any path prefix and a leading v.
     let tag = v.get("tag_name").and_then(|t| t.as_str()).map(|t| t.rsplit('/').next().unwrap_or(t).trim_start_matches('v').to_string()).unwrap_or_default();
@@ -480,7 +499,7 @@ pub async fn github_details(client: &reqwest::Client, repo: &str) -> Details {
         let url = format!("https://raw.githubusercontent.com/{repo}/HEAD/{name}");
         if let Ok(r) = client.get(&url).timeout(Duration::from_secs(10)).send().await {
             if r.status().is_success() {
-                if let Ok(t) = r.text().await {
+                if let Ok(t) = crate::net::text(r, crate::net::TEXT_LIMIT).await {
                     md = Some(t);
                     break;
                 }
@@ -509,7 +528,7 @@ pub async fn github_details(client: &reqwest::Client, repo: &str) -> Details {
         .await
     {
         if r.status().is_success() {
-            if let Ok(html) = r.text().await {
+            if let Ok(html) = crate::net::text(r, crate::net::TEXT_LIMIT).await {
                 image_url = first_html_image(&html);
             }
         }
@@ -545,8 +564,8 @@ pub async fn preview_image(client: &reqwest::Client, url: &str) -> Option<String
         return Some(d);
     }
     let resp = client.get(url).timeout(Duration::from_secs(20)).send().await.ok()?.error_for_status().ok()?;
-    let bytes = read_capped(resp, 8 * 1024 * 1024).await.ok()?;
-    let img = image::load_from_memory(&bytes).ok()?;
+    let bytes = crate::net::read_capped(resp, 8 * 1024 * 1024).await.ok()?;
+    let img = decode_remote(&bytes)?;
     let img = if img.width() > PREVIEW_W { img.resize(PREVIEW_W, PREVIEW_W * 4, FilterType::Triangle) } else { img };
     let rgb = img.to_rgb8();
     let mut out = Vec::new();
@@ -634,18 +653,29 @@ mod tests {
     }
 }
 
-/// Read a response body, stopping as soon as it passes `limit` bytes, so a
-/// server cannot make us hold an arbitrarily large download in memory.
-pub(crate) async fn read_capped(mut resp: reqwest::Response, limit: usize) -> anyhow::Result<Vec<u8>> {
-    let mut out = Vec::new();
-    while let Some(chunk) = resp.chunk().await? {
-        if out.len() + chunk.len() > limit {
-            anyhow::bail!("download is larger than the {} MB limit", limit >> 20);
-        }
-        out.extend_from_slice(&chunk);
-    }
-    Ok(out)
+#[cfg(test)]
+mod decode_tests {
+    use super::*;
 
+    fn png(w: u32, h: u32) -> Vec<u8> {
+        let mut out = Vec::new();
+        image::RgbaImage::new(w, h).write_to(&mut std::io::Cursor::new(&mut out), image::ImageFormat::Png).unwrap();
+        out
+    }
+
+    #[test]
+    fn an_ordinary_image_decodes() {
+        assert!(decode_remote(&png(64, 64)).is_some());
+    }
+
+    #[test]
+    fn an_image_past_the_size_limit_is_refused_before_decoding() {
+        let bytes = png(100, 40);
+        assert!(decode_limited(&bytes, 128).is_some());
+        assert!(decode_limited(&bytes, 64).is_none(), "width 100 is past a 64 px limit");
+        assert!(decode_limited(&png(40, 100), 64).is_none(), "height is limited too");
+        assert!(decode_remote(b"not an image").is_none());
+    }
 }
 
 #[cfg(test)]

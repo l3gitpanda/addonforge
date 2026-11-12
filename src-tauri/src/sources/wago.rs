@@ -26,7 +26,7 @@ pub async fn resolve(
         404 => anyhow::bail!("Wago has no Forever release for this addon"),
         _ => {}
     }
-    let v: Value = resp.error_for_status()?.json().await?;
+    let v: Value = crate::net::json(resp.error_for_status()?).await?;
     let recent = &v["recent_release"];
     // Stable first unless the user allows beta builds; alpha only as a last resort.
     let order: &[&str] = if prerelease { &["beta", "stable", "alpha"] } else { &["stable", "beta", "alpha"] };

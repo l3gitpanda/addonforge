@@ -83,13 +83,23 @@ pub fn clean_tmp(addons_dir: &Path) {
             for backup in backups.flatten() {
                 let name = backup.file_name();
                 let target = addons_dir.join(&name);
-                let moved = if target.exists() {
+                // Decided before the move: afterwards the target exists either way.
+                let occupied = target.exists();
+                let moved = if occupied {
                     fs::create_dir_all(&recovered).is_ok()
                         && fs::rename(backup.path(), recovered.join(format!("{}-{}", entry.file_name().to_string_lossy(), name.to_string_lossy()))).is_ok()
                 } else {
                     fs::rename(backup.path(), &target).is_ok()
                 };
-                crate::logi!("recovered interrupted install: {} ({})", name.to_string_lossy(), if target.exists() { "kept as a backup" } else { "restored" });
+                crate::logi!(
+                    "recovered interrupted install: {} ({})",
+                    name.to_string_lossy(),
+                    match (moved, occupied) {
+                        (false, _) => "could not be moved; left in the temp folder",
+                        (true, true) => "kept as a backup",
+                        (true, false) => "restored",
+                    }
+                );
                 all_moved &= moved;
             }
         }
@@ -99,19 +109,57 @@ pub fn clean_tmp(addons_dir: &Path) {
     }
 }
 
+/// How much an archive may hold. A small download must not be able to fill the
+/// disk or the folder table.
+struct ExtractLimits {
+    entries: usize,
+    bytes: u64,
+}
+
+const EXTRACT_LIMITS: ExtractLimits = ExtractLimits { entries: 20_000, bytes: 1 << 30 }; // 1 GiB expanded
+
+/// A name Windows would not store as written: an alternate data stream
+/// (`a.lua:x.exe` hides a second file that the safety scan never lists), a
+/// device (`CON`, `NUL`, `COM1`, with or without an extension: Windows 10 opens
+/// the device), a name it silently changes (a trailing dot or space), or
+/// characters it does not allow. Refused on every platform, so one archive
+/// installs the same way everywhere.
+fn unsafe_name(name: &str) -> bool {
+    if name.is_empty()
+        || name.ends_with(['.', ' '])
+        || name.chars().any(|c| c.is_control() || matches!(c, ':' | '<' | '>' | '"' | '|' | '?' | '*' | '\\' | '/'))
+    {
+        return true;
+    }
+    let stem = name.split('.').next().unwrap_or("").trim_end().to_ascii_uppercase();
+    let numbered = |prefix: &str| stem.len() == 4 && stem.starts_with(prefix) && stem.as_bytes()[3].is_ascii_digit();
+    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL" | "CONIN$" | "CONOUT$") || numbered("COM") || numbered("LPT")
+}
+
 /// Extract with limits, so a small archive cannot fill the disk. Entries that
-/// would leave the destination are refused.
+/// would leave the destination, or that Windows would store under another name
+/// or as something other than a plain file, are refused.
 fn extract_limited(archive: &mut zip::ZipArchive<fs::File>, dest: &Path) -> anyhow::Result<()> {
-    const MAX_ENTRIES: usize = 20_000;
-    const MAX_BYTES: u64 = 1 << 30; // 1 GiB expanded
+    extract_with(archive, dest, &EXTRACT_LIMITS)
+}
+
+fn extract_with(archive: &mut zip::ZipArchive<fs::File>, dest: &Path, limits: &ExtractLimits) -> anyhow::Result<()> {
     use std::io::Read as _;
-    if archive.len() > MAX_ENTRIES {
-        anyhow::bail!("archive has {} files, more than the {MAX_ENTRIES} allowed", archive.len());
+    let max_entries = limits.entries;
+    if archive.len() > max_entries {
+        anyhow::bail!("archive has {} files, more than the {max_entries} allowed", archive.len());
     }
     let mut total: u64 = 0;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
         let rel = entry.enclosed_name().ok_or_else(|| anyhow!("unsafe path in archive"))?;
+        for part in rel.components() {
+            if let std::path::Component::Normal(part) = part {
+                if unsafe_name(&part.to_string_lossy()) {
+                    anyhow::bail!("archive has a file name Windows cannot store as written: {}", entry.name());
+                }
+            }
+        }
         let out = dest.join(rel);
         if entry.is_dir() {
             fs::create_dir_all(&out)?;
@@ -120,11 +168,11 @@ fn extract_limited(archive: &mut zip::ZipArchive<fs::File>, dest: &Path) -> anyh
         if let Some(parent) = out.parent() {
             fs::create_dir_all(parent)?;
         }
-        let remaining = MAX_BYTES - total;
+        let remaining = limits.bytes - total;
         let mut file = fs::File::create(&out)?;
         let written = std::io::copy(&mut (&mut entry).take(remaining + 1), &mut file)?;
         if written > remaining {
-            anyhow::bail!("archive expands past the {} MB limit", MAX_BYTES >> 20);
+            anyhow::bail!("archive expands past the {} MB limit", (limits.bytes >> 20).max(1));
         }
         total += written;
     }
@@ -157,19 +205,66 @@ pub async fn download(
         .with_context(|| format!("download failed: {url}"))?
         .error_for_status()
         .with_context(|| format!("download refused: {url}"))?;
-    let mut file = fs::File::create(&path)?;
-    let mut stream = resp.bytes_stream();
-    let mut total: u64 = 0;
-    while let Some(chunk) = stream.next().await {
-        let chunk = chunk?;
-        total += chunk.len() as u64;
-        if total > 512 * 1024 * 1024 {
-            anyhow::bail!("download exceeded 512 MB; refusing");
-        }
-        file.write_all(&chunk)?;
+    if resp.content_length().is_some_and(|n| n > MAX_DOWNLOAD) {
+        anyhow::bail!("download is larger than 512 MB; refusing");
     }
-    file.flush()?;
+    let written = async {
+        let mut file = fs::File::create(&path)?;
+        let mut stream = resp.bytes_stream();
+        let mut total: u64 = 0;
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk?;
+            total += chunk.len() as u64;
+            if total > MAX_DOWNLOAD {
+                anyhow::bail!("download exceeded 512 MB; refusing");
+            }
+            file.write_all(&chunk)?;
+        }
+        file.flush()?;
+        Ok(())
+    }
+    .await;
+    // A cut-off or refused download is never left behind half-written.
+    if let Err(e) = written {
+        let _ = fs::remove_file(&path);
+        return Err(e);
+    }
     Ok(path)
+}
+
+const MAX_DOWNLOAD: u64 = 512 * 1024 * 1024;
+
+/// How long a staged download may sit before startup treats it as abandoned.
+/// Long enough that another copy of the app still downloading is never disturbed.
+const STALE_DOWNLOAD: std::time::Duration = std::time::Duration::from_secs(6 * 3600);
+
+/// Run at startup. Remove staged zips that no install picked up (the app was
+/// closed between download and install, or the install could not start).
+/// Only plain `.zip` files are touched; folders and links are left alone.
+pub fn clean_downloads(dir: &Path) -> usize {
+    clean_downloads_older_than(dir, STALE_DOWNLOAD)
+}
+
+fn clean_downloads_older_than(dir: &Path, max_age: std::time::Duration) -> usize {
+    let Ok(entries) = fs::read_dir(dir) else { return 0 };
+    let mut removed = 0;
+    for entry in entries.flatten() {
+        let Ok(kind) = entry.file_type() else { continue };
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if !kind.is_file() || !name.ends_with(".zip") {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|m| m.elapsed().ok())
+            .is_some_and(|age| age >= max_age);
+        if stale && fs::remove_file(entry.path()).is_ok() {
+            removed += 1;
+        }
+    }
+    removed
 }
 
 /// The folder name WoW expects: the one its `.toc` is named after. A GitHub
@@ -384,16 +479,22 @@ pub fn place_locked(
             .map(|entry| entry.map(|e| e.file_name().to_string_lossy().to_ascii_lowercase()))
             .collect::<std::io::Result<_>>()?;
         // Resolve every final target before moving any installed folder aside.
+        let mut targets: HashSet<String> = HashSet::new();
         let sources: Vec<(PathBuf, String)> = addon_dirs(&extract_dir)?
             .into_iter()
             .map(|src| {
                 let original = src.file_name().ok_or_else(|| anyhow!("bad folder name"))?
                     .to_string_lossy().to_string();
                 let name = canonical_name(&src).unwrap_or(original);
-                if name.starts_with('.') || name.contains("..") {
-                    anyhow::bail!("refusing suspicious folder name {name}");
+                // A file called just `.toc` gives an empty name, which would point at AddOns itself.
+                if name.is_empty() || name.starts_with('.') || name.contains("..") || unsafe_name(&name) {
+                    anyhow::bail!("refusing suspicious folder name {name:?}");
                 }
                 let lower = name.to_ascii_lowercase();
+                // Two folders landing on one name: the second would replace the first.
+                if !targets.insert(lower.clone()) {
+                    anyhow::bail!("the archive has two addon folders named {name}; refusing to guess which one is meant");
+                }
                 if on_disk.contains(&lower) {
                     if let Some(owner) = protected_folders.get(&lower) {
                         anyhow::bail!("cannot replace addon folder {name}: it belongs to {owner}");
@@ -792,6 +893,202 @@ mod recovery_tests {
         fs::create_dir_all(&out).unwrap();
         assert!(extract_limited(&mut archive, &out).is_err());
         assert!(!dir.join("escape.txt").exists());
+    }
+
+    /// A zip built entry by entry, for archives no packager would make.
+    fn raw_zip(dir: &Path, build: impl FnOnce(&mut zip::ZipWriter<fs::File>)) -> zip::ZipArchive<fs::File> {
+        let path = dir.join(format!("{}.zip", unique()));
+        let mut w = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        build(&mut w);
+        w.finish().unwrap();
+        zip::ZipArchive::new(fs::File::open(&path).unwrap()).unwrap()
+    }
+
+    fn file(w: &mut zip::ZipWriter<fs::File>, name: &str, body: &[u8]) {
+        let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
+        w.start_file(name, opts).unwrap();
+        std::io::Write::write_all(w, body).unwrap();
+    }
+
+    #[test]
+    fn names_windows_would_store_differently_are_refused() {
+        for name in [
+            "Foo/notes.lua:payload.exe", // alternate data stream: invisible to the safety scan
+            "Foo/CON",
+            "Foo/nul.lua",
+            "Foo/Com1.txt",
+            "Foo/LPT9",
+            "Foo/trailing.",
+            "Foo/trailing ",
+            "Foo/Sub./x.lua",
+            "Foo/what?.lua",
+            "Foo/tab\there.lua",
+        ] {
+            let dir = scratch("names");
+            let mut archive = raw_zip(&dir, |w| {
+                file(w, "Foo/Foo.toc", b"## Interface: 16001\n");
+                file(w, name, b"x");
+            });
+            let out = dir.join("out");
+            let err = extract_limited(&mut archive, &out).unwrap_err().to_string();
+            assert!(err.contains("cannot store"), "{name:?}: {err}");
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    #[test]
+    fn ordinary_addon_names_are_not_mistaken_for_devices() {
+        for name in ["Console.lua", "aux-addon", "COM10.lua", "Auxiliary.tga", "Nullify.lua", "LPT.lua", "con_fig.xml", "v1.2.3"] {
+            assert!(!unsafe_name(name), "{name}");
+        }
+        for name in ["", "AUX", "aux.lua", "CONOUT$", "x:y", "x.", "x "] {
+            assert!(unsafe_name(name), "{name:?}");
+        }
+    }
+
+    #[test]
+    fn an_archive_that_expands_past_the_limit_stops_at_the_limit() {
+        let dir = scratch("bomb");
+        // 256 KB of zeros deflates to a few hundred bytes.
+        let mut archive = raw_zip(&dir, |w| file(w, "Foo/zeros.lua", &vec![0u8; 256 * 1024]));
+        let out = dir.join("out");
+        let limits = ExtractLimits { entries: 10, bytes: 16 * 1024 };
+        let err = extract_with(&mut archive, &out, &limits).unwrap_err().to_string();
+        assert!(err.contains("limit"), "{err}");
+        // It stopped writing one byte past the limit, not at the end of the entry.
+        let written = fs::metadata(out.join("Foo").join("zeros.lua")).unwrap().len();
+        assert!(written <= limits.bytes + 1, "wrote {written} bytes");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_archive_with_too_many_entries_is_refused_before_extracting() {
+        let dir = scratch("entries");
+        let mut archive = raw_zip(&dir, |w| {
+            for i in 0..5 {
+                file(w, &format!("Foo/{i}.lua"), b"x");
+            }
+        });
+        let out = dir.join("out");
+        let err = extract_with(&mut archive, &out, &ExtractLimits { entries: 4, bytes: 1 << 20 }).unwrap_err().to_string();
+        assert!(err.contains("more than the 4 allowed"), "{err}");
+        assert!(!out.join("Foo").exists(), "nothing is written before the count is checked");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_symlink_entry_is_written_as_a_plain_file() {
+        let dir = scratch("symlink");
+        let mut archive = raw_zip(&dir, |w| {
+            file(w, "Foo/Foo.toc", b"## Interface: 16001\n");
+            w.add_symlink("Foo/link", "../../../outside", zip::write::SimpleFileOptions::default()).unwrap();
+        });
+        let out = dir.join("out");
+        extract_limited(&mut archive, &out).unwrap();
+        let link = out.join("Foo").join("link");
+        let meta = fs::symlink_metadata(&link).unwrap();
+        assert!(meta.is_file() && !meta.file_type().is_symlink(), "a link entry must not become a link");
+        assert_eq!(fs::read_to_string(&link).unwrap(), "../../../outside");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    fn addons_with_existing(name: &str) -> (PathBuf, PathBuf) {
+        let root = scratch("place");
+        let addons = root.join("AddOns");
+        fs::create_dir_all(addons.join(name)).unwrap();
+        fs::write(addons.join(name).join("keep.lua"), "the user's copy").unwrap();
+        (root, addons)
+    }
+
+    fn zip_file(root: &Path, entries: &[(&str, &str)]) -> PathBuf {
+        let path = root.join(format!("{}.zip", unique()));
+        let mut w = zip::ZipWriter::new(fs::File::create(&path).unwrap());
+        for (name, body) in entries {
+            file(&mut w, name, body.as_bytes());
+        }
+        w.finish().unwrap();
+        path
+    }
+
+    #[test]
+    fn a_toc_with_no_name_cannot_point_the_install_at_addons_itself() {
+        let (root, addons) = addons_with_existing("Questie");
+        let zip = zip_file(&root, &[("Wrap-1.0/.toc", "## Interface: 16001\n"), ("Wrap-1.0/x.lua", "x")]);
+        let err = place(&zip, &addons, &HashMap::new()).unwrap_err().to_string();
+        assert!(err.contains("suspicious folder name"), "{err}");
+        assert_eq!(fs::read_to_string(addons.join("Questie").join("keep.lua")).unwrap(), "the user's copy");
+        assert!(!addons.join("x.lua").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn two_folders_with_one_target_name_are_refused() {
+        let (root, addons) = addons_with_existing("Shared");
+        let zip = zip_file(&root, &[
+            ("Shared-1.0/Shared.toc", "## Version: 1\n"),
+            ("Shared-2.0/Shared_Forever.toc", "## Version: 2\n"),
+        ]);
+        let err = place(&zip, &addons, &HashMap::new()).unwrap_err().to_string();
+        assert!(err.contains("two addon folders named Shared"), "{err}");
+        assert_eq!(fs::read_to_string(addons.join("Shared").join("keep.lua")).unwrap(), "the user's copy");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn folders_that_differ_only_in_case_never_install_twice() {
+        let (root, addons) = addons_with_existing("Other");
+        let zip = zip_file(&root, &[("Foo/Foo.toc", "## Version: 1\n"), ("foo/foo.toc", "## Version: 2\n")]);
+        // Windows merges the two while extracting (one folder); other systems keep two and refuse.
+        match place(&zip, &addons, &HashMap::new()) {
+            Ok(installed) => assert_eq!(installed.len(), 1, "{installed:?}"),
+            Err(e) => assert!(e.to_string().contains("two addon folders"), "{e}"),
+        }
+        let foos = fs::read_dir(&addons).unwrap().flatten().filter(|e| e.file_name().eq_ignore_ascii_case("foo")).count();
+        assert!(foos <= 1, "{foos} folders named foo");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// Serve one HTTP reply that promises more bytes than it sends, then hangs up.
+    fn serve_truncated() -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            let (mut sock, _) = listener.accept().unwrap();
+            let mut buf = [0u8; 1024];
+            let _ = sock.read(&mut buf);
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100000\r\nConnection: close\r\n\r\nPK\x03\x04 only the start");
+        });
+        format!("http://{addr}/Addon.zip")
+    }
+
+    #[test]
+    fn a_cut_off_download_leaves_no_file_behind() {
+        let dir = scratch("download");
+        let staged = dir.join("downloads");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let url = serve_truncated();
+        let result = rt.block_on(download(&reqwest::Client::new(), &url, &staged, "Addon.zip", &[]));
+        assert!(result.is_err(), "a truncated body must fail");
+        assert_eq!(fs::read_dir(&staged).unwrap().count(), 0, "the partial file must be removed");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn abandoned_downloads_are_cleared_and_nothing_else() {
+        let dir = scratch("stale");
+        fs::write(dir.join("abc-Addon.zip"), "old").unwrap();
+        fs::write(dir.join("notes.txt"), "not ours").unwrap();
+        fs::create_dir_all(dir.join("folder.zip")).unwrap();
+        // Fresh files survive the startup sweep.
+        assert_eq!(clean_downloads(&dir), 0);
+        assert!(dir.join("abc-Addon.zip").exists());
+        // Once old enough, only the plain zip goes.
+        assert_eq!(clean_downloads_older_than(&dir, std::time::Duration::ZERO), 1);
+        assert!(!dir.join("abc-Addon.zip").exists());
+        assert!(dir.join("notes.txt").exists());
+        assert!(dir.join("folder.zip").is_dir());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

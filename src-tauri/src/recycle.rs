@@ -43,6 +43,26 @@ pub fn label() -> &'static str {
     }
 }
 
+/// `canonicalize` returns an extended-length path; the shell's file operation
+/// takes only the classic form. `\\?\C:\x` becomes `C:\x`, and a network share
+/// `\\?\UNC\server\share\x` becomes `\\server\share\x` (simply dropping the
+/// prefix would leave `UNC\server\...`, a path relative to the current folder).
+/// Anything else, such as a `\\?\Volume{...}` path, has no classic form: `None`.
+#[cfg_attr(not(windows), allow(dead_code))]
+fn shell_path(extended: &str) -> Option<String> {
+    let Some(rest) = extended.strip_prefix(r"\\?\") else {
+        return Some(extended.to_string());
+    };
+    if let Some(share) = rest.strip_prefix(r"UNC\") {
+        return Some(format!(r"\\{share}"));
+    }
+    let drive = rest.as_bytes();
+    if drive.len() >= 3 && drive[0].is_ascii_alphabetic() && drive[1] == b':' && drive[2] == b'\\' {
+        return Some(rest.to_string());
+    }
+    None
+}
+
 /// Move whole folders to the Recycle Bin / Trash. Paths must be real folders,
 /// not links: the caller checks that.
 #[cfg(windows)]
@@ -119,9 +139,8 @@ mod windows_shell {
         let mut from: Vec<u16> = Vec::new();
         for path in paths {
             let full = std::fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
-            // canonicalize returns a \\?\ path; the shell API does not take one.
-            let text = full.to_string_lossy().to_string();
-            let text = text.strip_prefix(r"\\?\").unwrap_or(&text).to_string();
+            let text = super::shell_path(&full.to_string_lossy())
+                .ok_or_else(|| format!("{} is not a folder path Windows can move to the Recycle Bin", full.display()))?;
             if text.chars().count() > SHELL_PATH_LIMIT {
                 return Err(format!(
                     "{text} is too long for Windows to move to the Recycle Bin; delete it in Explorer instead"
@@ -215,6 +234,15 @@ mod tests {
         assert!(!addon.exists(), "the folder should have left the disk");
         assert!(root.exists(), "only the folder asked for moves");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn extended_paths_become_paths_the_shell_reads_the_same_way() {
+        assert_eq!(shell_path(r"\\?\C:\Games\WoW\Interface\AddOns\X").as_deref(), Some(r"C:\Games\WoW\Interface\AddOns\X"));
+        // A network share must stay absolute, not turn into `UNC\...` relative to the current folder.
+        assert_eq!(shell_path(r"\\?\UNC\nas\games\WoW\Interface\AddOns\X").as_deref(), Some(r"\\nas\games\WoW\Interface\AddOns\X"));
+        assert_eq!(shell_path(r"D:\AddOns\X").as_deref(), Some(r"D:\AddOns\X"));
+        assert_eq!(shell_path(r"\\?\Volume{0b1c2d3e-0000-0000-0000-000000000000}\AddOns\X"), None);
     }
 
     #[test]

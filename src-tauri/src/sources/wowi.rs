@@ -27,7 +27,7 @@ pub async fn resolve(client: &reqwest::Client, id: u64) -> anyhow::Result<Remote
     if resp.status().as_u16() == 404 {
         anyhow::bail!("WoWInterface has no addon with id {id}");
     }
-    let list: Vec<FileDetails> = resp.error_for_status()?.json().await?;
+    let list: Vec<FileDetails> = crate::net::json(resp.error_for_status()?).await?;
     let d = list
         .into_iter()
         .next()

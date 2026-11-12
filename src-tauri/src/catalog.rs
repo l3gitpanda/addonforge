@@ -131,17 +131,15 @@ pub const STATS_URL: &str =
 
 pub async fn load_stats(client: &reqwest::Client) -> Stats {
     let r = async {
-        client
+        let resp = client
             .get(STATS_URL)
             .timeout(Duration::from_secs(6))
             .send()
             .await
             .ok()?
             .error_for_status()
-            .ok()?
-            .json::<Stats>()
-            .await
-            .ok()
+            .ok()?;
+        crate::net::json::<Stats>(resp).await.ok()
     }
     .await;
     r.unwrap_or_else(|| serde_json::from_str(BUNDLED_STATS).unwrap_or_default())
@@ -168,9 +166,12 @@ fn verify_with(raw: &[u8], sig: &str, key: &[u8; 32]) -> anyhow::Result<Catalog>
     Ok(serde_json::from_slice(raw)?)
 }
 
+const CATALOG_LIMIT: usize = 4 * 1024 * 1024;
+
 async fn fetch_text(client: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
     let r = client.get(url).timeout(Duration::from_secs(6)).send().await.ok()?.error_for_status().ok()?;
-    r.bytes().await.ok().map(|b| b.to_vec())
+    // The signed catalogue is about 55 KB; a reply far past that is not it.
+    crate::net::read_capped(r, CATALOG_LIMIT).await.ok()
 }
 
 /// Latest catalogue: the signed remote copy if reachable within a few seconds, else bundled.

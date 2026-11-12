@@ -135,9 +135,9 @@ async fn check_channel(client: &reqwest::Client, channel: Option<&str>, url_over
     let url = url.as_str();
     // The manifest is trusted only with a valid signature from the release key.
     let res: anyhow::Result<Latest> = async {
-        let manifest = crate::icons::read_capped(client.get(url).send().await?.error_for_status()?, 1024 * 1024).await?;
+        let manifest = crate::net::read_capped(client.get(url).send().await?.error_for_status()?, 1024 * 1024).await?;
         let sig_resp = client.get(format!("{url}.sig")).send().await?.error_for_status()?;
-        let sig = String::from_utf8(crate::icons::read_capped(sig_resp, 4096).await?)?;
+        let sig = String::from_utf8(crate::net::read_capped(sig_resp, 4096).await?)?;
         let key = crate::signing::verified_key()?;
         crate::signing::verify_manifest(&manifest, &sig, &key)?;
         Ok(serde_json::from_slice(&manifest)?)
@@ -185,7 +185,8 @@ pub async fn apply(client: &reqwest::Client, latest: &Latest) -> anyhow::Result<
     } else {
         latest.filename.clone()
     };
-    if name.contains(['/', '\\']) || !name.to_ascii_lowercase().ends_with(".exe") {
+    // `:` as well: `C:x.exe` is drive-relative, and joining it would leave the app folder.
+    if name.contains(['/', '\\', ':']) || name.starts_with('.') || !name.to_ascii_lowercase().ends_with(".exe") {
         anyhow::bail!("refusing odd update filename {name}");
     }
     let portable = is_portable(&current);
@@ -194,7 +195,7 @@ pub async fn apply(client: &reqwest::Client, latest: &Latest) -> anyhow::Result<
         anyhow::bail!("update has the same filename as the running exe");
     }
     let tmp = dir.join(format!("{name}.part"));
-    let bytes = crate::icons::read_capped(client.get(&latest.url).send().await?.error_for_status()?, 200 * 1024 * 1024).await?;
+    let bytes = crate::net::read_capped(client.get(&latest.url).send().await?.error_for_status()?, 200 * 1024 * 1024).await?;
     if bytes.len() < 1_000_000 {
         anyhow::bail!("downloaded file is too small to be AddonForge ({} bytes)", bytes.len());
     }

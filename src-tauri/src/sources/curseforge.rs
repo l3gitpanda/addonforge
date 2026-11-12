@@ -408,7 +408,7 @@ pub async fn fetch(client: &reqwest::Client, id: u64) -> anyhow::Result<ModInfo>
     if let Some(e) = api_error(resp.status().as_u16()) {
         return Err(e);
     }
-    let m: Data<ModInfo> = resp.error_for_status()?.json().await?;
+    let m: Data<ModInfo> = crate::net::json(resp.error_for_status()?).await?;
     remember(std::slice::from_ref(&m.data));
     Ok(m.data)
 }
@@ -428,7 +428,7 @@ pub async fn prefetch(client: &reqwest::Client, ids: &[u64]) -> anyhow::Result<u
         if let Some(e) = api_error(resp.status().as_u16()) {
             return Err(e);
         }
-        let m: Data<Vec<ModInfo>> = resp.error_for_status()?.json().await?;
+        let m: Data<Vec<ModInfo>> = crate::net::json(resp.error_for_status()?).await?;
         remember(&m.data);
         total += m.data.len();
     }
@@ -466,7 +466,7 @@ pub async fn search_page(client: &reqwest::Client, page: &Page) -> anyhow::Resul
     if let Some(e) = api_error(resp.status().as_u16()) {
         return Err(e);
     }
-    let m: Paged<Vec<ModInfo>> = resp.error_for_status()?.json().await?;
+    let m: Paged<Vec<ModInfo>> = crate::net::json(resp.error_for_status()?).await?;
     remember(&m.data);
     Ok((m.data, m.pagination.total_count))
 }
@@ -589,7 +589,7 @@ pub async fn file(client: &reqwest::Client, mod_id: u64, file_id: u64) -> anyhow
     if let Some(e) = api_error(resp.status().as_u16()) {
         return Err(e);
     }
-    let f: Data<FileInfo> = resp.error_for_status()?.json().await?;
+    let f: Data<FileInfo> = crate::net::json(resp.error_for_status()?).await?;
     Ok(f.data)
 }
 

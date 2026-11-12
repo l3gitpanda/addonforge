@@ -4,6 +4,7 @@ mod backup;
 mod catalog;
 mod icons;
 mod install;
+mod net;
 pub mod log;
 mod recycle;
 mod secrets;
@@ -94,6 +95,11 @@ pub struct Package {
 
 fn addons_dir(install: &str) -> PathBuf {
     Path::new(install).join("Interface").join("AddOns")
+}
+
+/// Where release zips wait between download and install, outside the AddOns folder.
+fn downloads_dir() -> PathBuf {
+    AppState::dir().join("downloads")
 }
 
 fn pick_source(
@@ -1044,7 +1050,7 @@ async fn install_from(
     let shown_url = if matches!(src, Source::Curse(_)) { "(CurseForge download)" } else { remote.download_url.as_str() };
     logi!("install {key} from {} {} -> {shown_url}", src.label(), remote.version);
     // Staged outside the addons folder: the install lock and recovery never touch it.
-    let tmp = state::AppState::dir().join("downloads");
+    let tmp = downloads_dir();
     // CurseForge's CDN wants the API key on a download; no other source gets a header.
     let (auth, from_curse) = match src {
         Source::Curse(_) => (sources::curseforge::download_headers(&remote.download_url), true),
@@ -1940,6 +1946,10 @@ fn make_app() -> Shared {
     let st = AppState::load();
     if let Some(p) = &st.install_path {
         install::clean_tmp(&addons_dir(p));
+    }
+    let stale = install::clean_downloads(&downloads_dir());
+    if stale > 0 {
+        logi!("removed {stale} abandoned download(s)");
     }
     let secrets = secrets::Secrets::os().map(Arc::new).map_err(|e| e.to_string());
     match &secrets {

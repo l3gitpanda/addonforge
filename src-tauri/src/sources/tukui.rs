@@ -19,7 +19,7 @@ pub async fn resolve(client: &reqwest::Client, slug: &str) -> anyhow::Result<Rem
     if resp.status().as_u16() == 404 {
         anyhow::bail!("TukUI has no addon '{slug}'");
     }
-    let a: TukAddon = resp.error_for_status()?.json().await?;
+    let a: TukAddon = crate::net::json(resp.error_for_status()?).await?;
     if a.url.is_empty() {
         anyhow::bail!("TukUI entry has no download url");
     }
