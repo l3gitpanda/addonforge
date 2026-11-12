@@ -1,0 +1,134 @@
+name: Release
+
+# Every push to main that changes the app builds it on Windows and publishes a
+# GitHub release tagged v<version>-b<build> with the portable exe and the
+# installer. Run it by hand from the Actions tab to release the current main.
+#
+# Not done here, compared with build.ps1 -Release: no Defender scan and no
+# signed latest.json. Self-update is off in this fork (selfupdate.rs
+# UPDATE_CHANNEL = None), so nothing reads latest.json yet.
+#
+# Actions are pinned to commit SHAs (tag in the comment). The build job only
+# reads the repo; only the publish job, which runs no third-party code, can
+# write releases.
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "catalog/**"
+      - "docs/**"
+      - "**.md"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# One release at a time, so two quick pushes cannot pick the same build number.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 20
+      - name: Security check
+        run: node scripts/security-check.mjs
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+        with:
+          workspaces: src-tauri
+      - name: cargo test
+        working-directory: src-tauri
+        run: cargo test
+      - name: UI checks
+        run: node scripts/test-ui.js
+
+      - name: Version and build number
+        id: ver
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = (Get-Content src-tauri/tauri.conf.json -Raw | ConvertFrom-Json).version
+          if ($version -notmatch '^\d+\.\d+\.\d+$') { throw "version must be x.y.z (got '$version')" }
+          # Next build = highest b<N> among this repo's releases + 1. Starts
+          # after upstream's last build (31) so numbers never look like theirs.
+          $last = 31
+          $tags = gh release list --repo $env:GITHUB_REPOSITORY --limit 200 --json tagName --jq '.[].tagName'
+          if ($LASTEXITCODE -ne 0) { throw "could not list releases" }
+          foreach ($t in $tags) { if ($t -match '-b(\d+)$' -and [int]$Matches[1] -gt $last) { $last = [int]$Matches[1] } }
+          $build = $last + 1
+          "version=$version" >> $env:GITHUB_OUTPUT
+          "build=$build"     >> $env:GITHUB_OUTPUT
+          "tag=v$version-b$build" >> $env:GITHUB_OUTPUT
+          Write-Host "AddonForge v$version build $build"
+
+      - name: Install Tauri CLI
+        run: npm ci
+      - name: Build exe and installer
+        env:
+          ADDONFORGE_BUILD: ${{ steps.ver.outputs.build }}   # baked into the exe (selfupdate::build)
+        run: npx tauri build --bundles nsis
+
+      - name: Collect release files
+        shell: pwsh
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          New-Item -ItemType Directory -Force out | Out-Null
+          Copy-Item src-tauri/target/release/addonforge.exe "out/AddonForge-$env:TAG.exe"
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis -Filter "*-setup.exe" | Select-Object -First 1
+          if (-not $setup) { throw "NSIS installer not found" }
+          Copy-Item $setup.FullName "out/AddonForge-Setup-$env:TAG.exe"
+          Get-ChildItem out -Filter *.exe | ForEach-Object {
+            "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)"
+          } | Set-Content -Encoding ascii out/SHA256SUMS.txt
+          Get-Content out/SHA256SUMS.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-files
+          path: out/
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: release-files
+          path: out
+      - name: Publish release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          $tag = $env:TAG
+          $notes = @"
+          Built by GitHub Actions from $env:GITHUB_SHA.
+
+          - ``AddonForge-Setup-$tag.exe``: installs to your user folder with a Start menu shortcut and an uninstaller, no admin rights needed.
+          - ``AddonForge-$tag.exe``: portable, run it from anywhere.
+
+          Windows 10/11. Not code-signed, so SmartScreen may show an unknown-publisher warning. This build does not update itself; check SHA256SUMS.txt against your download.
+          "@
+          gh release create $tag (Get-ChildItem out).FullName `
+            --repo $env:GITHUB_REPOSITORY --target $env:GITHUB_SHA `
+            --title "AddonForge $tag" --notes $notes --generate-notes
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
