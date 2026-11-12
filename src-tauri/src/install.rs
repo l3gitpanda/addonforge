@@ -131,11 +131,14 @@ fn extract_limited(archive: &mut zip::ZipArchive<fs::File>, dest: &Path) -> anyh
     Ok(())
 }
 
+/// `headers` go with the request: a source that wants its API key on a
+/// download says so here, and every other download sends none.
 pub async fn download(
     client: &reqwest::Client,
     url: &str,
     dest_dir: &Path,
     filename: &str,
+    headers: &[(&'static str, String)],
 ) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(dest_dir)?;
     let safe: String = filename
@@ -144,8 +147,11 @@ pub async fn download(
         .collect();
     let safe = if safe.to_ascii_lowercase().ends_with(".zip") { safe } else { format!("{safe}.zip") };
     let path = dest_dir.join(format!("{}-{}", unique(), safe));
-    let resp = client
-        .get(url)
+    let mut request = client.get(url);
+    for (name, value) in headers {
+        request = request.header(*name, value);
+    }
+    let resp = request
         .send()
         .await
         .with_context(|| format!("download failed: {url}"))?

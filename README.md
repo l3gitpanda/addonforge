@@ -1,5 +1,7 @@
 # AddonForge
 
+> **This is a fork** of [Topher121/AddonForge](https://github.com/Topher121/AddonForge), being developed into a privacy-first build. It has no releases of its own yet: the download link, update channel, catalogue, Discord and support address below are still the original project's. What the fork changes is in [CHANGELOG.md](CHANGELOG.md); what is planned is in [docs/FORK_ROADMAP.md](docs/FORK_ROADMAP.md).
+
 A small, fast addon manager for **World of Warcraft: Forever**.
 
 **[Download the latest release](https://github.com/Topher121/AddonForge/releases/latest)** for Windows 10/11. Two flavours, same app:
@@ -28,7 +30,7 @@ On top of that there is a **catalogue**: [`catalog/forever.json`](catalog/foreve
 - Sort the catalogue by name, most downloaded or recently updated. Download totals come from a daily GitHub Action that sums each author's release downloads into [`catalog/stats.json`](catalog/stats.json).
 - Finds your WoW: Forever install and lists every addon in it, grouped properly (BigWigs and its twelve zone folders are one row).
 - Checks for updates in parallel, straight from where each author publishes.
-- Installs from the catalogue, from **any GitHub repo** you paste in, or from a **CurseForge search** covering every Forever addon they list.
+- Installs from the catalogue, from **any GitHub repo** you paste in, or from a **CurseForge search** covering every Forever addon they list (with your own CurseForge API key, added in Settings).
 - Tells you when an addon is missing a required dependency, with a one-click install if the catalogue knows it.
 - Pin an addon to hold it at its current version. Ignore one to hide it.
 - Optional pre-release toggle for authors who only ship Forever builds as betas.
@@ -50,7 +52,7 @@ Honest version: AddonForge is designed, tested and decided by one person with a 
 | Wago Addons | Link only | Wago gives updater keys to its Patreon supporters only, so AddonForge no longer installs from Wago. Entries that live only there link to their Wago page. |
 | WoWInterface | No | Public JSON API. |
 | TukUI | No | ElvUI / Tukui. |
-| CurseForge | Built in | Search all Forever addons on CurseForge and install the ones whose authors allow third-party downloads (about seven in ten of the popular ones). The API key ships inside release builds and is only ever sent to api.curseforge.com. API responses aren't cached on disk; the only CurseForge data AddonForge keeps is the project id and version name of what you installed, in its settings and log. Opted-out addons are link only. |
+| CurseForge | Your own | Search all Forever addons on CurseForge and install the ones whose authors allow third-party downloads (about seven in ten of the popular ones). Needs a CurseForge API key of your own, added in Settings: CurseForge issues each key to one person and does not allow it to be passed on, so this fork does not ship one. The key is tested once, then kept in Windows Credential Manager (macOS: the Keychain), never in the settings file, log, diagnostics or an exported list, and is sent only to CurseForge: api.curseforge.com, and its download servers (forgecdn.net) when a file is fetched. API responses aren't cached on disk; the only CurseForge data AddonForge keeps is the project id and version name of what you installed, in its settings and log. Opted-out addons are link only. Details: [docs/PROVIDER_INTEGRATIONS.md](docs/PROVIDER_INTEGRATIONS.md). |
 
 ## Build
 
@@ -103,14 +105,14 @@ From build 27, AddonForge verifies a project signature on its update manifest an
 AddonForge does not collect or send personal data and has no telemetry, accounts or analytics. It contacts only these hosts, and only to check versions, read addon details and download addons:
 
 - github.com, api.github.com, raw.githubusercontent.com and GitHub's release download hosts: the addon catalogue, AddonForge's own updates, and GitHub-hosted addons (addon details, README images and author avatars).
-- api.curseforge.com and edge.forgecdn.net: CurseForge addon lookups and downloads (only for addons whose authors allow third-party downloads).
+- api.curseforge.com, edge.forgecdn.net and the forgecdn.net host it hands downloads to: CurseForge addon lookups and downloads (only once you have added your own API key, and only for addons whose authors allow third-party downloads).
 - api.mmoui.com: WoWInterface addon lookups and the download hosts it returns.
 - api.tukui.org: TukUI addon lookups and the download hosts it returns.
 - media.forgecdn.net, wago.io hosts, www.wowinterface.com and cdn-wow.mmoui.com: only for the preview image, when the first screenshot in a GitHub-hosted addon's README lives there.
 
 Every request is HTTPS, and a site can redirect it to another host (GitHub's downloads do). At launch the app reads the catalogue, download totals and its own update manifest from this repo, then checks your installed addons for updates; there's no setting to turn that off.
 
-These requests reveal your IP address, your AddonForge version (in the User-Agent) and the addon names or IDs being checked, as with any web request. GitHub counts downloads of release files, so the update manifest's counter gives the maintainer a rough, anonymous count of launches. The CurseForge API key is sent only to api.curseforge.com.
+These requests reveal your IP address, your AddonForge version (in the User-Agent) and the addon names or IDs being checked, as with any web request. GitHub counts downloads of release files, so the update manifest's counter gives the maintainer a rough, anonymous count of launches. Your CurseForge API key is sent only to CurseForge: to api.curseforge.com, and with a file download to its forgecdn.net servers, which have required it since July 2026. A request carrying the key is never allowed to be redirected anywhere else.
 
 **Scope of signing**
 Only AddonForge's own release builds are signed, and only from source in this repository. Addons installed through AddonForge are made by their own authors and are not signed by this project.
