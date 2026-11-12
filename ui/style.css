@@ -275,6 +275,8 @@ select:focus-visible { outline:1px solid var(--accent); outline-offset:2px; }
 .badge.update { font-weight:400; }
 .badge.ok::before { content:'✓'; background:none; width:auto; height:auto; font-size:15px; }
 .badge.curse-only { color:var(--muted); }
+/* A link-only reason may run to two lines in the narrow action column. */
+.c-act .badge.why { white-space:normal; text-align:right; line-height:1.25; cursor:help; }
 .badge.no-key { color:var(--warn); }
 .more-actions summary { border-color:transparent; font-size:18px; padding:0 5px; }
 .c-act { gap:3px; }

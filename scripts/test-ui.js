@@ -93,15 +93,23 @@ assert.match(element('installed-sort-status').attributes['aria-label'], /highest
 run(`settings = { has_curse: true };
 curse.rows = [
   {id:1,name:'TomTom <x>',summary:'Nav',authors:'A',category:'Map & Minimap',downloads:1500,url:'https://www.curseforge.com/projects/1',installable:true,installed:false,catalog_id:null},
-  {id:2,name:'Leatrix',summary:'QoL',authors:'B',category:'',downloads:70000000,url:'u',installable:false,installed:false,catalog_id:null},
-  {id:3,name:'Questie',summary:'Q',authors:'C',category:'Quests',downloads:5,url:'u',installable:true,installed:true,catalog_id:null}
+  {id:2,name:'Leatrix',summary:'QoL',authors:'B',category:'',downloads:70000000,url:'u',installable:false,link_reason:'author',installed:false,catalog_id:null},
+  {id:3,name:'Questie',summary:'Q',authors:'C',category:'Quests',downloads:5,url:'u',installable:true,installed:true,catalog_id:null},
+  {id:4,name:'RetailOnly',summary:'R',authors:'D',category:'',downloads:9,url:'u',installable:false,link_reason:'no-forever',installed:false,catalog_id:null}
 ]; curse.query = 'tom'; curse.total = 120; curse.loaded = 50; renderCurseRows();`);
 assert.match(element('curse-list').innerHTML, /TomTom &lt;x&gt;/);
 assert.match(element('curse-list').innerHTML, /data-act="curse-install"/);
-assert.match(element('curse-list').innerHTML, /link only/);
+// A link-only row says why on the row itself, not only on hover, and an
+// author's opt-out is never put down to the key.
+const curseRow = (id) => element('curse-list').innerHTML.split('<div class="item"').find((r) => r.includes(`data-id="${id}"`));
+assert.match(curseRow(2), />CurseForge app only<\/span>/);
+assert.match(curseRow(2), /title="Its author lets only CurseForge&#39;s own app download it[^"]*An API key can&#39;t change that/);
+assert.doesNotMatch(curseRow(2), /curse-install/);
+assert.match(curseRow(4), />no Forever file<\/span>/);
+assert.doesNotMatch(curseRow(4), /own app/, 'no Forever file is not the author opting out');
 assert.match(element('curse-list').innerHTML, /installed/);
 assert.match(element('curse-list').innerHTML, /Map &amp; Minimap/);
-assert.equal(String(element('curse-status').textContent), '3 of 120 from CurseForge');
+assert.equal(String(element('curse-status').textContent), '4 of 120 from CurseForge');
 run(`curse.rows = []; curse.total = 0; curse.loaded = 0; curse.query = 'zzz'; renderCurseRows();`);
 assert.equal(String(element('curse-status').textContent), 'Nothing on CurseForge for "zzz".');
 assert.equal(element('curse-list').innerHTML, '');
@@ -189,8 +197,18 @@ assert.equal(run("installSources(catalog[1]).map(s => s.kind).join()"), 'github,
 assert.equal(run("installSources(catalog[2]).length"), 0);
 assert.equal(run("installSources(catalog[3]).length"), 0, 'Wago-only is link only');
 assert.match(element('browse-list').innerHTML, /<select class="src-pick"[^>]*><option value="github">GitHub/);
-assert.match(element('browse-list').innerHTML, /link only/);
+const catalogRow = (id) => element('browse-list').innerHTML.split('<div class="item"').find((r) => r.includes(`data-id="${id}"`));
+assert.match(catalogRow('locked'), />CurseForge app only<\/span>/, 'an opted-out author is named as the reason');
+assert.match(catalogRow('wagoonly'), />Wago only<\/span>/);
 assert.doesNotMatch(element('browse-list').innerHTML, /Wago key/);
+// The same reasons reach the details pane, and without a key a CurseForge-only entry asks for one.
+assert.match(run("linkOnlyWhy(catalog[2]).tip"), /^Its author lets only CurseForge's own app/);
+assert.notEqual(run("linkOnlyWhy({ curse: 9 }).label"), 'needs API key', 'with a key, never ask for one');
+run(`settings = { has_curse: false }`);
+assert.equal(run("linkOnlyWhy({ curse: 9 }).label"), 'needs API key');
+assert.equal(run("linkOnlyWhy({ curse: 9, curse_locked: true }).label"), 'CurseForge app only', 'a key would not help an opted-out author');
+assert.equal(run("linkOnlyWhy({}).label"), 'link only');
+run(`settings = { has_curse: true }`);
 run(`renderImportPlan([{ name: 'List <b>', key: 'x', installed: false, installable: true, source: { kind: 'github', id: 'a/<img src=x>' }, why: '' }])`);
 assert.match(element('import-plan').innerHTML, /a\/&lt;img src=x&gt;/, 'An imported source is shown as text');
 assert.doesNotMatch(element('import-plan').innerHTML, /<img/, 'An imported list cannot add markup');

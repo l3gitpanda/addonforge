@@ -158,13 +158,45 @@ fn pick_source(
     None
 }
 
+/// An addon whose author has switched off downloads in other apps. CurseForge
+/// gives no other app a download for it, whatever the key, so these say whose
+/// choice it was and never suggest that a key would help.
+const CURSE_AUTHOR_ONLY_UPDATE: &str =
+    "Its author lets only CurseForge's own app download it, so AddonForge can't update it. The link opens its page";
+const CURSE_AUTHOR_ONLY_INSTALL: &str =
+    "Its author lets only CurseForge's own app download it, so AddonForge can't install it. Open its CurseForge page to get it";
+
 /// Why a row whose only home is CurseForge is link only. Without a key the
-/// fix is the user's to make, so say so; with one, the author has opted out.
+/// fix is the user's to make, so say so; when the author opted out, say that.
 fn curse_only_note(author_opted_out: bool, have_key: bool) -> &'static str {
-    if have_key || author_opted_out {
+    if author_opted_out {
+        CURSE_AUTHOR_ONLY_UPDATE
+    } else if have_key {
         "Only on CurseForge: AddonForge can't update it, but the link works"
     } else {
         "On CurseForge: add your CurseForge API key in Settings and AddonForge can update it. The link works meanwhile"
+    }
+}
+
+/// A failed resolve, in words for the user. CurseForge's opt-out comes back
+/// as a tagged error; the tag is for the code, not for a toast.
+fn resolve_error(e: &anyhow::Error) -> String {
+    let msg = e.to_string();
+    if msg.starts_with(sources::curseforge::OPT_OUT) {
+        CURSE_AUTHOR_ONLY_INSTALL.into()
+    } else {
+        msg
+    }
+}
+
+/// Why a CurseForge search row can't be installed here, for the row to show:
+/// `None` when it can be.
+fn curse_link_reason(pick: &sources::curseforge::Pick) -> Option<&'static str> {
+    use sources::curseforge::Pick;
+    match pick {
+        Pick::Ready(_) | Pick::NeedsFile(_) => None,
+        Pick::OptOut => Some("author"),
+        Pick::NoForeverFile => Some("no-forever"),
     }
 }
 
@@ -615,14 +647,11 @@ async fn resolve_into(app: &App, pkg: &mut Package, cat: &Catalog) {
         Ok(r) => apply_remote(pkg, r, vouched),
         Err(e) => {
             let msg = e.to_string();
-            if let Some(rest) = msg.strip_prefix(sources::curseforge::OPT_OUT) {
+            if msg.starts_with(sources::curseforge::OPT_OUT) {
                 // Not an error: the author only publishes through CurseForge's own app.
                 pkg.status = "curse-only".into();
                 // One line only: the catalogue's wording wins when it has one.
-                pkg.note = pkg
-                    .notice
-                    .take()
-                    .unwrap_or_else(|| format!("CurseForge{rest}; the link still works"));
+                pkg.note = pkg.notice.take().unwrap_or_else(|| CURSE_AUTHOR_ONLY_UPDATE.to_string());
                 return;
             }
             loge!("check {}: {e}", pkg.key);
@@ -1037,7 +1066,7 @@ async fn install_from(
         wago_key: None,
         prerelease: st.allow_prerelease,
     };
-    let remote = sources::resolve(&app.client, src, opts).await.map_err(err)?;
+    let remote = sources::resolve(&app.client, src, opts).await.map_err(|e| resolve_error(&e))?;
     let vouched = entry.and_then(|e| e.forever);
     // A source archive says nothing about flavours (forever = None); then the
     // catalogue's own verdict stands in for it.
@@ -1305,8 +1334,12 @@ struct CurseRow {
     category: String,
     downloads: u64,
     url: String,
-    /// False when the author only distributes through CurseForge's own app.
+    /// False when the author only distributes through CurseForge's own app,
+    /// or there is no Forever file.
     installable: bool,
+    /// Why it isn't installable, for the row to say: "author" (opted out of
+    /// other apps) or "no-forever". `None` when it is installable.
+    link_reason: Option<&'static str>,
     /// Catalogue id when this project is already listed (so its row is preferred).
     catalog_id: Option<String>,
     installed: bool,
@@ -1347,10 +1380,8 @@ async fn curse_search(
         .into_iter()
         .map(|m| {
             let entry = cat.addons.iter().find(|e| e.curse == Some(m.id));
-            let installable = matches!(
-                sources::curseforge::pick_file(&m, st.allow_prerelease),
-                sources::curseforge::Pick::Ready(_) | sources::curseforge::Pick::NeedsFile(_)
-            );
+            let link_reason = curse_link_reason(&sources::curseforge::pick_file(&m, st.allow_prerelease));
+            let installable = link_reason.is_none();
             let installed = have.iter().any(|p| {
                 p.curse_id == Some(m.id)
                     || matches!(&p.source, Some(Source::Curse(c)) if *c == m.id)
@@ -1365,6 +1396,7 @@ async fn curse_search(
                 downloads: m.download_count,
                 url: if m.links.website_url.is_empty() { sources::curseforge::project_url(m.id) } else { m.links.website_url.clone() },
                 installable,
+                link_reason,
                 catalog_id: entry.map(|e| e.id.clone()),
                 installed,
             }
@@ -1462,7 +1494,7 @@ fn chosen_source(e: &CatalogEntry, kind: &str) -> Result<Source, String> {
                 return Err(sources::curseforge::NO_KEY.into());
             }
             if e.curse_locked {
-                return Err(format!("{}'s author only distributes it through CurseForge's own app", e.name));
+                return Err(format!("{}'s author lets only CurseForge's own app download it, so AddonForge can't install it", e.name));
             }
             e.curse.map(Source::Curse).ok_or_else(missing)
         }
@@ -2334,6 +2366,38 @@ mod tests {
         for (opted_out, have_key) in [(true, false), (true, true), (false, true)] {
             assert!(!curse_only_note(opted_out, have_key).contains("API key"), "{opted_out} {have_key}");
         }
+        // An opted-out row says whose choice it was, key or no key.
+        for have_key in [false, true] {
+            assert!(curse_only_note(true, have_key).starts_with("Its author lets only CurseForge's own app"), "{have_key}");
+        }
+    }
+
+    #[test]
+    fn an_opted_out_install_explains_itself_without_the_internal_tag() {
+        let opted_out = anyhow::anyhow!("{}: the author only distributes this addon through CurseForge's own app", sources::curseforge::OPT_OUT);
+        let msg = resolve_error(&opted_out);
+        assert!(!msg.contains(sources::curseforge::OPT_OUT), "{msg}");
+        assert!(msg.contains("Its author lets only CurseForge's own app download it"), "{msg}");
+        assert!(!msg.contains("API key"), "a key would not help: {msg}");
+        // Anything else passes through as it was.
+        let other = anyhow::anyhow!("CurseForge has no Forever release for this addon");
+        assert_eq!(resolve_error(&other), "CurseForge has no Forever release for this addon");
+    }
+
+    #[test]
+    fn a_curseforge_search_row_says_why_it_is_link_only() {
+        use sources::curseforge::Pick;
+        let ready = Remote {
+            version: "1.0".into(),
+            download_url: "https://edge.forgecdn.net/files/1/2/a.zip".into(),
+            filename: "a.zip".into(),
+            forever: Some(true),
+            prerelease: false,
+        };
+        assert_eq!(curse_link_reason(&Pick::Ready(ready)), None);
+        assert_eq!(curse_link_reason(&Pick::NeedsFile(7)), None);
+        assert_eq!(curse_link_reason(&Pick::OptOut), Some("author"));
+        assert_eq!(curse_link_reason(&Pick::NoForeverFile), Some("no-forever"));
     }
 
     #[test]

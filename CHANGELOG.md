@@ -22,6 +22,14 @@ Based on AddonForge v0.4.0 (build 31 source, commit `7bdd46b`).
 
 ### Changed
 
+- **Link-only rows say why.** A row AddonForge can't install used to read
+  "link only", with the reason only in a tooltip, so an addon whose author has
+  turned off downloads in other apps looked like a key that didn't work. The
+  row now names the reason: "CurseForge app only" (the author's choice; a key
+  can't change it), "needs API key", "no Forever file" or "Wago only", with the
+  full sentence on hover and in the details pane. Installing such an addon, or
+  an installed one's status line, says the same, and the internal
+  `CURSE_OPTOUT` tag no longer reaches the message.
 - **A fork build no longer updates itself from the original project.** The
   self-updater still pointed at the original's releases, and the app holds the
   original's signing key (for the catalogue), so a fork build offered "Update

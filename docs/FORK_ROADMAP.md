@@ -29,6 +29,14 @@ Last updated: 12 November 2026.
   path, removal, self-update, images and every network read, with fixes and
   malformed-archive tests. Findings in [AUDIT.md](AUDIT.md). After it:
   `cargo test` 126 passed, 2 ignored.
+- Fourth change, same branch: link-only rows name their reason ("CurseForge
+  app only", "needs API key", "no Forever file", "Wago only") instead of a
+  bare "link only", after an opted-out addon (NetherSuite) looked like a
+  broken key. After it: `cargo test` 128 passed, 2 ignored; UI checks pass.
+- With the owner's real key (12 November 2026), CLI search works and returns
+  `allowModDistribution` as expected: every opted-out result is link only,
+  every allowed one resolves to a download. A download and install with
+  the key have not been observed by a session yet.
 
 ## Do first: the fork still behaves as the original
 

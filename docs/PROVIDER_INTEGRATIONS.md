@@ -91,8 +91,10 @@ From the *CurseForge 3rd Party API Terms and Conditions* (Overwolf), as read on
 2. **Live install is unverified.** The fork has no key, so these were tested
    only as far as they go without one: a made-up key is refused by the real API
    and nothing is stored; a search with no key reports that a key is needed;
-   the key round-trips through the real Windows Credential Manager. Not yet
-   seen working: a search with a real key, a download that carries the key,
+   the key round-trips through the real Windows Credential Manager. Since 12
+   November 2026 the owner has a real key: it was accepted, and a CLI search
+   with it works and reports each result's `allowModDistribution` correctly.
+   Not yet seen by a session: a download that carries the key,
    the exact status code the CDN returns for a bad key (the blog says 401; a
    request with no key got 403).
 3. **Which hosts serve downloads.** Only `edge.forgecdn.net` then
@@ -110,7 +112,8 @@ From the *CurseForge 3rd Party API Terms and Conditions* (Overwolf), as read on
 | No key | "CurseForge needs an API key: add yours in Settings" |
 | Key refused when saving | "CurseForge did not accept that key for World of Warcraft. …" (nothing is saved) |
 | Key refused later (revoked, expired) | "CurseForge rejected the API key; check it in Settings" |
-| Author opted out of third-party downloads | Row shows "link only"; installing says the author only distributes through CurseForge's own app |
+| Author opted out of third-party downloads | Row shows "CurseForge app only" (full reason on hover and in the details pane). Installing, or an installed row, says "Its author lets only CurseForge's own app download it, so AddonForge can't install (update) it". CurseForge's `allowModDistribution` is `false` for these; checked on 12 November 2026 for NetherSuite and the rest of the Nether family, Details!, DBM, Bagnon, Leatrix Plus and Auctionator. |
+| Search result with no Forever file | Row shows "no Forever file" |
 | Nothing published for Forever | "CurseForge has no Forever release for this addon" |
 | Download refused | "CurseForge refused the download: it did not accept the API key. Check the key in Settings" |
 | Rate limit | "CurseForge rate limit hit; try again in a minute" |

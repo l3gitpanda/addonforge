@@ -630,6 +630,26 @@ function installSources(e) {
   return out;
 }
 
+// Why a row offers its page instead of Install: a short label for the row and
+// the whole sentence for its tooltip and the details pane. It says whose
+// choice it was, so a working CurseForge key is never blamed for an author's setting.
+const LINK_ONLY = {
+  author: { label: "CurseForge app only", tip: "Its author lets only CurseForge's own app download it, so AddonForge can't. An API key can't change that. The link opens its CurseForge page." },
+  key: { label: "needs API key", tip: "On CurseForge: add your CurseForge API key in Settings to install it here. The link opens its page meanwhile." },
+  "no-forever": { label: "no Forever file", tip: "CurseForge has no WoW: Forever release of it. The link opens its page." },
+  wago: { label: "Wago only", tip: "Only on Wago, whose download keys are for its Patreon supporters, so AddonForge can't download it. The link opens its page." },
+  none: { label: "link only", tip: "AddonForge has no source it can download this from. The link opens its page." },
+};
+function linkOnlyWhy(e) {
+  if (e.curse && e.curse_locked) return LINK_ONLY.author;
+  if (e.curse && !settings?.has_curse) return LINK_ONLY.key;
+  if (e.wago) return LINK_ONLY.wago;
+  return LINK_ONLY.none;
+}
+function linkOnlyBadge(why) {
+  return `<span class="badge curse-only why" title="${esc(why.tip)}">${esc(why.label)}</span>`;
+}
+
 // "owner/repo" or a github.com link typed into the search box.
 function githubRepoFrom(text) {
   const t = text.trim();
@@ -659,7 +679,7 @@ function renderCatalog() {
             <div class="c-dl" title="${e.downloads != null ? esc(e.downloads.toLocaleString() + " downloads, all time, counted on " + (e.stat_source === "wowi" ? "WoWInterface" : "GitHub")) : "No download count for this source"}">${e.downloads != null ? `<b>${fmtCount(e.downloads)}</b>` : `<span class="muted">\u2014</span>`}${e.updated_at ? `<div class="sub-line">${ago(e.updated_at)}</div>` : ""}</div>
             <div class="c-src">${srcCell}</div>
             <div class="c-act">
-              ${srcs.length ? `<button class="btn small" data-act="install">${e.installed ? "Reinstall" : "Install"}</button>` : `<span class="badge curse-only">link only</span>`}
+              ${srcs.length ? `<button class="btn small" data-act="install">${e.installed ? "Reinstall" : "Install"}</button>` : linkOnlyBadge(linkOnlyWhy(e))}
             </div>
           </div>`;
         })
@@ -731,7 +751,7 @@ async function openDetail(id, installedPackage = null) {
   const canInstall = e.github || e.wowi || e.tukui || (e.curse && !e.curse_locked && settings?.has_curse);
   $("detail-install").textContent = e.installed ? "Reinstall" : "Install";
   $("detail-install").classList.toggle("hidden", !canInstall);
-  $("detail-note").textContent = canInstall ? "" : installedPackage ? "Manage this addon from its row menu." : "Not installable from here: get it from its page.";
+  $("detail-note").textContent = canInstall ? "" : installedPackage ? "Manage this addon from its row menu." : linkOnlyWhy(e).tip;
   $("detail-open").classList.toggle("hidden", !entryUrl(e));
   $("detail").classList.remove("hidden");
   $("detail-close").focus();
@@ -821,7 +841,7 @@ function renderCurseRows() {
     .map((r) => {
       const act = r.installed ? '<span class="badge ok">installed</span>'
         : r.installable ? `<button class="btn small" data-act="curse-install">Install</button>`
-        : `<span class="badge curse-only" title="The author only distributes this through CurseForge's own app; the link opens its page">link only</span>`;
+        : linkOnlyBadge(LINK_ONLY[r.link_reason] || LINK_ONLY.author);
       return `<div class="item" data-id="${r.id}">
         <div class="c-name">${iconTile("cf", String(r.id), r.name)}<div class="nm-wrap"><a class="nm" href="#" data-url="${esc(r.url)}">${esc(r.name)}</a><div class="sub-line" title="${esc(r.summary)}">${esc(r.summary)}</div></div></div>
         <div class="c-cat muted">${esc(r.category || "")}</div>
@@ -958,7 +978,7 @@ function renderBundles() {
       const chips = b.addons
         .map((a) => {
           const state = a.installed ? "have" : a.installable ? "todo" : a.needs_key ? "key" : "link";
-          const tip = a.installed ? "Installed" : a.installable ? a.desc : a.needs_key ? "Needs a Wago key (Settings)" : "Link only, not installable from here";
+          const tip = a.installed ? "Installed" : a.installable ? a.desc : a.needs_key ? "Needs a Wago key (Settings)" : linkOnlyWhy(catalog.find((c) => c.id === a.id) || {}).tip;
           return `<button class="chip ${state}" data-detail="${esc(a.id)}" title="${esc(tip)}">${iconTile("c", a.id, a.name)}${esc(a.name)}${a.installed ? " \u2713" : ""}</button>`;
         })
         .join("");
