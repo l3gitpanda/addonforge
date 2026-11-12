@@ -23,6 +23,15 @@ Forked from Topher121/AddonForge at v0.4.0 (build 31 source, commit `7bdd46b`).
 
 ### Changed
 
+- **A fork build no longer updates itself from the original project.** The
+  self-updater still pointed at the original's releases, and the app holds the
+  original's signing key (for the catalogue), so a fork build offered "Update
+  now" and would have replaced itself with the original app. Self-update now
+  needs an update channel of the build's own (`selfupdate::UPDATE_CHANNEL`),
+  and the fork has none yet: no update manifest is requested at launch, nothing
+  is offered, and nothing is installed, including when `ADDONFORGE_UPDATE_URL`
+  or `--cli selfupdate <url> --force` points at a manifest. Settings says so in
+  place of the "check now" link. Addon updates are unaffected.
 - **CurseForge downloads now carry the API key**, as CurseForge has required
   for its file servers since 16 July 2026. Before, the key went only to
   `api.curseforge.com` and downloads went without it. The key is attached only

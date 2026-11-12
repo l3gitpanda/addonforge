@@ -1,6 +1,6 @@
 # AddonForge
 
-> **This is a fork** of [Topher121/AddonForge](https://github.com/Topher121/AddonForge), being developed into a privacy-first build. It has no releases of its own yet: the download link, update channel, catalogue, Discord and support address below are still the original project's. What the fork changes is in [CHANGELOG.md](CHANGELOG.md); what is planned is in [docs/FORK_ROADMAP.md](docs/FORK_ROADMAP.md).
+> **This is a fork** of [Topher121/AddonForge](https://github.com/Topher121/AddonForge), being developed into a privacy-first build. It has no releases of its own yet: the download link, catalogue, Discord and support address below are still the original project's. A build of the fork does not update itself, and will not replace itself with the original's releases; what this page says about self-update describes the original's builds. What the fork changes is in [CHANGELOG.md](CHANGELOG.md); what is planned is in [docs/FORK_ROADMAP.md](docs/FORK_ROADMAP.md).
 
 A small, fast addon manager for **World of Warcraft: Forever**.
 
@@ -110,9 +110,9 @@ AddonForge does not collect or send personal data and has no telemetry, accounts
 - api.tukui.org: TukUI addon lookups and the download hosts it returns.
 - media.forgecdn.net, wago.io hosts, www.wowinterface.com and cdn-wow.mmoui.com: only for the preview image, when the first screenshot in a GitHub-hosted addon's README lives there.
 
-Every request is HTTPS, and a site can redirect it to another host (GitHub's downloads do). At launch the app reads the catalogue, download totals and its own update manifest from this repo, then checks your installed addons for updates; there's no setting to turn that off.
+Every request is HTTPS, and a site can redirect it to another host (GitHub's downloads do). At launch the app reads the catalogue and download totals from the original project's repo, then checks your installed addons for updates; there's no setting to turn that off yet. A fork build does not fetch an update manifest: it has no update channel of its own.
 
-These requests reveal your IP address, your AddonForge version (in the User-Agent) and the addon names or IDs being checked, as with any web request. GitHub counts downloads of release files, so the update manifest's counter gives the maintainer a rough, anonymous count of launches. Your CurseForge API key is sent only to CurseForge: to api.curseforge.com, and with a file download to its forgecdn.net servers, which have required it since July 2026. A request carrying the key is never allowed to be redirected anywhere else.
+These requests reveal your IP address, your AddonForge version (in the User-Agent) and the addon names or IDs being checked, as with any web request. GitHub counts downloads of release files, so in the original's builds the update manifest's counter gives its maintainer a rough, anonymous count of launches; a fork build does not request that file, so it is not counted. Your CurseForge API key is sent only to CurseForge: to api.curseforge.com, and with a file download to its forgecdn.net servers, which have required it since July 2026. A request carrying the key is never allowed to be redirected anywhere else.
 
 **Scope of signing**
 Only AddonForge's own release builds are signed, and only from source in this repository. Addons installed through AddonForge are made by their own authors and are not signed by this project.

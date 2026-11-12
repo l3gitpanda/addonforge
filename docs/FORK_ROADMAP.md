@@ -23,26 +23,24 @@ Last updated: 12 November 2026.
   CurseForge API key (see [CHANGELOG.md](../CHANGELOG.md) and
   [PROVIDER_INTEGRATIONS.md](PROVIDER_INTEGRATIONS.md)). After it:
   `cargo test` 106 passed, 2 ignored.
+- Second change, same branch: self-update is off until the fork has its own
+  update channel. After it: `cargo test` 110 passed, 2 ignored.
 
 ## Do first: the fork still behaves as the original
 
-Found while testing the first change. None of these is fixed yet; each needs a
-decision from the owner (the fork's name, repo address, and whether it signs
-its own releases).
+Found while testing the first change. #1 is closed; the rest are open, and each
+needs a decision from the owner (the fork's name, repo address, and whether it
+signs its own releases).
 
 | # | Problem | Where | Effect |
 |---|---|---|---|
-| 1 | Self-update points at upstream | `selfupdate.rs` `LATEST_URL`, `signing.rs` `RELEASE_PUBLIC_KEY` | **A fork build offers "Update now" to upstream's build 31.** Accepting replaces the fork with the original app. Seen in a dev build on 12 Nov 2026. |
+| 1 | ~~Self-update points at upstream~~ **Tested: off** | `selfupdate.rs` `UPDATE_CHANNEL` (`None`) | A fork build offered "Update now" to upstream's build 31 and would have replaced itself with the original app. Now no manifest is requested, nothing is offered and `apply` refuses. Verified by unit tests, by pointing the built CLI at upstream's real manifest with `--force` (refused, exe unchanged), and in the running app (no banner, no request in the log). **To turn self-update back on:** publish signed fork releases, put the fork's public key in `signing.rs`, and set `UPDATE_CHANNEL` to the fork's `latest.json`. The catalogue shares `RELEASE_PUBLIC_KEY` today, so changing the key needs #4 solved at the same time. `RELEASES_URL` (non-Windows) still names upstream and is unreachable while the channel is off; fix it with the channel. |
 | 2 | Bug reports go to upstream | `lib.rs` `REPO_URL`, `SUPPORT_EMAIL`; Discord and Ko-fi links in `ui/index.html` | "Report a problem" opens an issue on the original repo or emails its maintainer about a build they did not make. |
 | 3 | User-Agent names upstream | `lib.rs` `USER_AGENT` | Every request tells addon sites it is the original project. |
 | 4 | Catalogue and stats come from upstream | `catalog.rs` `REMOTE_URL`, `STATS_URL` | Works, and is signature-checked with upstream's key. The fork cannot change the catalogue without its own key and URL. Also a launch-time request to a repo the fork does not control. |
 | 5 | Same settings folder and app id | `state.rs` (`%APPDATA%\AddonForge`), `tauri.conf.json` `identifier` | The fork and the original share `state.json`. Either can rewrite the other's settings. |
 | 6 | Daily stats workflow | `.github/workflows/stats.yml` | If Actions are enabled on the fork, it commits to `main` every day as "Pocket Forge Studios". |
 | 7 | Version and build numbers | `Cargo.toml`, `tauri.conf.json`, `package.json`, `build.ps1` | Fork milestones (v0.1 to v1.0) need a scheme that cannot be confused with upstream's 0.4.0 build 31. |
-
-Smallest safe step for #1 until the fork signs its own releases: set
-`RELEASE_PUBLIC_KEY` handling so self-update is off, without breaking the
-catalogue check that shares the key.
 
 ## Audit so far
 
@@ -77,8 +75,9 @@ download hosts; `api.curseforge.com`; `edge.forgecdn.net` and the
 `cdn-wow.mmoui.com`. Needs confirming against the code in the Phase One audit.
 
 At launch, by upstream's own description: catalogue, download totals, update
-manifest, then an update check of every installed addon. No setting turns any
-of it off.
+manifest, then an update check of every installed addon. A fork build no longer
+requests the update manifest (confirmed in the log). No setting turns the rest
+off.
 
 ## Phase One: privacy and security (P0)
 
@@ -96,7 +95,7 @@ of it off.
 | Diagnostics redaction | Implemented (upstream) + key never included | Home folder and usernames replaced. Not audited further. |
 | Provider disclosures | In progress | CurseForge done in Settings and the README. |
 | Zip traversal, bombs, limits, symlinks, junctions, Unicode and case collisions, temp files, races, rollback, deletion limits | Not audited | Upstream has tests for several. Audit, then add malformed-archive tests. |
-| Update verification | Not audited | Ed25519 manifest signature + SHA-256 (upstream). |
+| Update verification | Not audited | Ed25519 manifest signature + SHA-256 (upstream). Dormant while the fork has no update channel; audit before turning it on. |
 | Redirect validation | **Tested** for CurseForge | Key-bearing requests cannot leave CurseForge's hosts. Other sources: HTTPS-only and a hop limit, nothing more. |
 | External URL handling, CSP, webview boundary | Implemented (upstream), CI-gated | Not audited beyond the config. |
 | Provider metadata validation | Not audited | |
@@ -150,8 +149,9 @@ is installed.
 
 ## Next, in order
 
-1. Decide the fork's name, repo address and release signing; then fix the
-   identity table above, self-update first.
+1. Decide the fork's name, repo address and release signing; then fix the rest
+   of the identity table above (bug-report address and User-Agent first: they
+   send things to the original project on the fork's behalf).
 2. Verify CurseForge end to end with a real key: search, install, update, an
    opted-out addon, a revoked key.
 3. Phase One audit of `install.rs`, `recycle.rs`, `selfupdate.rs`, `icons.rs`,

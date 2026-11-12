@@ -769,6 +769,8 @@ struct Settings {
     secret_store: Option<String>,
     /// Install everything that has an update right after the launch check.
     auto_update: bool,
+    /// This build can update itself (it has an update channel of its own).
+    self_update: bool,
     /// What a reversible removal is called here: "Recycle Bin" or "Trash".
     recycle_label: String,
 }
@@ -799,6 +801,7 @@ async fn get_settings(app: State<'_, Shared>) -> Result<Settings, String> {
         curse_key_page: sources::curseforge::KEY_PAGE.into(),
         secret_store: app.secrets.as_ref().ok().map(|s| s.label().to_string()),
         auto_update: st.auto_update,
+        self_update: selfupdate::enabled(),
         recycle_label: recycle::label().into(),
     })
 }
@@ -1716,6 +1719,10 @@ async fn import_list(app: State<'_, Shared>, path: String) -> Result<Vec<ImportR
 async fn check_self_update(app: State<'_, Shared>) -> Result<selfupdate::SelfUpdate, String> {
     let url = std::env::var("ADDONFORGE_UPDATE_URL").ok();
     let mut r = selfupdate::check(&app.client, url.as_deref()).await;
+    if !r.enabled {
+        // No update channel in this build: nothing was asked, nothing to report.
+        return Ok(r);
+    }
     let st = app.state.lock().await;
     if st.skip_self_update.as_deref() == Some(r.tag.as_str()) {
         r.available = false;
@@ -1738,6 +1745,9 @@ async fn skip_self_update(app: State<'_, Shared>, tag: String) -> Result<(), Str
 async fn apply_self_update(app: State<'_, Shared>, handle: tauri::AppHandle) -> Result<String, String> {
     let url = std::env::var("ADDONFORGE_UPDATE_URL").ok();
     let r = selfupdate::check(&app.client, url.as_deref()).await;
+    if !r.enabled {
+        return Err(selfupdate::OFF.into());
+    }
     let latest = r.latest.ok_or_else(|| r.error.unwrap_or_else(|| "no update info".into()))?;
     if !r.available {
         return Err("Already up to date".into());
@@ -1759,6 +1769,9 @@ async fn apply_self_update(app: State<'_, Shared>, handle: tauri::AppHandle) -> 
 #[cfg(not(windows))]
 #[tauri::command]
 async fn apply_self_update() -> Result<String, String> {
+    if !selfupdate::enabled() {
+        return Err(selfupdate::OFF.into());
+    }
     tauri_plugin_opener::open_url(selfupdate::RELEASES_URL, None::<&str>).map_err(err)?;
     Ok("browser".into())
 }
@@ -2152,11 +2165,16 @@ pub fn cli(args: &[String]) -> i32 {
                 Ok(serde_json::to_value(r).unwrap())
             }
             #[cfg(not(windows))]
+            "selfupdate" if !selfupdate::enabled() => Err(selfupdate::OFF.into()),
+            #[cfg(not(windows))]
             "selfupdate" => Err(format!("self-update is Windows-only; get the new version from {}", selfupdate::RELEASES_URL)),
             #[cfg(windows)]
             "selfupdate" => {
                 let url = args.get(1).cloned().or_else(|| std::env::var("ADDONFORGE_UPDATE_URL").ok());
                 let r = selfupdate::check(&app.client, url.as_deref()).await;
+                if !r.enabled {
+                    return Err(selfupdate::OFF.into());
+                }
                 let latest = r.latest.ok_or("no update info")?;
                 let force = args.iter().any(|a| a == "--force");
                 if !r.available && !force {

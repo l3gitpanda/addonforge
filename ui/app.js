@@ -1094,6 +1094,9 @@ async function loadSettings() {
     : "No game folder selected — choose one in Settings";
   $("install-line").classList.toggle("connected", !!settings.install);
   $("svfix-note").classList.toggle("hidden", !settings.svfix);
+  // A build with no update channel of its own says so instead of offering a check.
+  $("btn-selfcheck").classList.toggle("hidden", settings.self_update === false);
+  $("selfupdate-off").classList.toggle("hidden", settings.self_update !== false);
   renderCurseKey();
   $("footer-open-folder").disabled = !settings.install;
 }
@@ -1376,6 +1379,13 @@ async function checkSelf(manual = false) {
     selfUpdate = await invoke("check_self_update");
   } catch (err) {
     if (manual) toast(String(err), true);
+    return;
+  }
+  // `enabled: false` means this build has no update channel: nothing was asked,
+  // so there is nothing to offer, and "up to date" would be a claim nobody checked.
+  if (selfUpdate.enabled === false) {
+    $("selfupdate").classList.add("hidden");
+    if (manual) toast("This build does not update itself yet");
     return;
   }
   if (selfUpdate.available && selfUpdate.latest) {

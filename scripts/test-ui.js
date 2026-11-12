@@ -493,6 +493,44 @@ assert.ok(parseFloat(menu.style.right) >= 12, 'Options stay inside the right edg
   assert.match(element('toast').textContent, /removed from this PC/);
   assert.equal(run('curse.rows.length'), 0, 'CurseForge rows go when the key goes');
 
+  // Self-update. A build with no update channel offers nothing and does not
+  // claim to be up to date; a build with one shows the banner as before.
+  let bannerHidden = null;
+  element('selfupdate').classList = { add: () => { bannerHidden = true; }, remove: () => { bannerHidden = false; }, toggle() {} };
+  invokeReply = () => Promise.resolve({ enabled: false, available: false, latest: null, tag: '', error: null });
+  element('toast').textContent = '';
+  await run('checkSelf(false)');
+  assert.equal(invokeCalls.at(-1).command, 'check_self_update');
+  assert.equal(bannerHidden, true, 'No banner without an update channel');
+  assert.equal(element('toast').textContent, '', 'The launch check says nothing');
+  await run('checkSelf(true)');
+  assert.match(element('toast').textContent, /does not update itself/);
+  assert.doesNotMatch(element('toast').textContent, /up to date/);
+  // Even a reply that claims an update is ignored when the channel is off.
+  invokeReply = () => Promise.resolve({ enabled: false, available: true, latest: { version: '9.9.9', build: 99 }, tag: 'v9.9.9-b99', error: null });
+  bannerHidden = null;
+  await run('checkSelf(false)');
+  assert.equal(bannerHidden, true, 'An offer is never shown when the channel is off');
+  invokeReply = () => Promise.resolve({ enabled: true, available: true, latest: { version: '9.9.9', build: 99 }, tag: 'v9.9.9-b99', error: null });
+  await run('checkSelf(false)');
+  assert.equal(bannerHidden, false, 'A build with its own channel still offers its update');
+  assert.match(element('selfupdate-text').innerHTML, /v9\.9\.9<\/b> build 99/);
+  invokeReply = () => Promise.resolve({ enabled: true, available: false, latest: null, tag: '', error: null });
+  await run('checkSelf(true)');
+  assert.match(element('toast').textContent, /up to date/);
+
+  // Settings swap the "check now" link for a plain statement when there is no channel.
+  const shown = {};
+  for (const id of ['btn-selfcheck', 'selfupdate-off']) element(id).classList = { add() {}, remove() {}, toggle: (cls, on) => { if (cls === 'hidden') shown[id] = !on; } };
+  invokeReply = () => Promise.resolve({ version: '0.4.0', build: 0, self_update: false });
+  await run('loadSettings()');
+  assert.equal(shown['btn-selfcheck'], false);
+  assert.equal(shown['selfupdate-off'], true);
+  invokeReply = () => Promise.resolve({ version: '0.4.0', build: 0, self_update: true });
+  await run('loadSettings()');
+  assert.equal(shown['btn-selfcheck'], true);
+  assert.equal(shown['selfupdate-off'], false);
+
   run('clearTimeout(toastTimer); clearTimeout(curse.timer)');
-  console.log('UI checks passed: counts, eligible updates, failure priority and retry, filters, search, escaping, empty states, modal focus and cancellation, sort direction and remote pagination, saved preferences, backups and folder actions, CurseForge-only rows, reversible removal and the CurseForge API key.');
+  console.log('UI checks passed: counts, eligible updates, failure priority and retry, filters, search, escaping, empty states, modal focus and cancellation, sort direction and remote pagination, saved preferences, backups and folder actions, CurseForge-only rows, reversible removal, the CurseForge API key and self-update being off without a channel.');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

@@ -147,6 +147,7 @@
         <label class="chk big"><input type="checkbox" id="pref-prerelease"> Include pre-releases and beta builds</label>
         <p class="hint">For authors who only ship their Forever build as a GitHub pre-release. Uses the GitHub API for the check, limited to 60 requests an hour without a token.</p>
         <button id="btn-selfcheck" class="link">Check for an AddonForge update now</button>
+        <p id="selfupdate-off" class="hint hidden">This build does not update itself. It is a fork with no releases of its own yet, and it will not replace itself with the original AddonForge. Addon updates are not affected.</p>
       </div>
     </div>
 
@@ -214,7 +215,7 @@
       <div class="pref-label">About</div>
       <div class="pref-body about">
         <p>AddonForge <span id="version"></span> by Pocket Forge Studios.</p>
-        <p class="hint">No accounts, no ads, no analytics. Talks only to the addon sites (GitHub, CurseForge, WoWInterface, TukUI, and Wago for preview images). At launch it reads the catalogue, download totals and its own update manifest from GitHub, then checks your installed addons for updates. CurseForge search and installs use your own API key (see CurseForge above); it is kept in your system's credential store and only ever sent to CurseForge's API and download servers. The only CurseForge data kept on disk is the project id and version name of what you installed.</p>
+        <p class="hint">No accounts, no ads, no analytics. Talks only to the addon sites (GitHub, CurseForge, WoWInterface, TukUI, and Wago for preview images). At launch it reads the catalogue and download totals from GitHub, then checks your installed addons for updates. This build does not look for updates to itself. CurseForge search and installs use your own API key (see CurseForge above); it is kept in your system's credential store and only ever sent to CurseForge's API and download servers. The only CurseForge data kept on disk is the project id and version name of what you installed.</p>
         <p class="hint">Catalogue: <span id="catalog-info">…</span><br>Settings file: <code id="state-file"></code></p>
         <p class="hint"><a href="#" data-url="https://github.com/Topher121/AddonForge">Source code and catalogue</a> · <a href="#" data-url="https://ko-fi.com/pocketforgestudios">Support the dev</a> · <a href="#" data-url="https://discord.gg/2qyV5kxT9h">Discord</a> · <a href="#" data-url="mailto:PocketForgeStudios@proton.me">PocketForgeStudios@proton.me</a></p>
         <p class="hint">Independent project. Not affiliated with CurseForge, Overwolf, Blizzard Entertainment, Wago, WoWInterface or TukUI. World of Warcraft is a trademark of Blizzard Entertainment.</p>
