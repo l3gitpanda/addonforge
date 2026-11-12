@@ -167,6 +167,13 @@ track of it.
   later from a real source (GitHub, or CurseForge if the author allows it)
   takes over the same package. A zip with no Forever TOC answers `NOT_FOREVER`
   and the UI asks "install anyway?", as for a download.
+- **Back to a real source:** the zip's key need not match the one a real
+  source picks (a zip whose TOC names only a GitHub website is `folder:Foo`;
+  a GitHub install of it is `github:owner/Foo`). So `install_from` lets a
+  download take over a zip install (`takeover_plan`) when that zip install is
+  the only package owning any of the archive's folders and the archive holds
+  every one of its folders. The zip's record goes, its pin and ignore carry
+  over, and every other package's folders stay protected.
 - **Record:** `state.json` gets `source: "local"`, `source_id` the zip's file
   name, the TOC's version and the folders. That makes it managed: pinning,
   removal (deleted outright, as AddonForge's own) and recovery work as for any
@@ -200,7 +207,9 @@ track of it.
 
 - Unit tests: staging (`install.rs`), the plan hook, and the whole flow in
   `lib.rs` `local_zip_tests`: managed record and row, catalogue identity,
-  reinstall keeping the pin, another package's folder refused, eight malformed
+  reinstall keeping the pin, a GitHub install taking over a `folder:` zip
+  install (and refusing partial or mixed archives), another package's folder
+  refused, eight malformed
   archives plus a non-zip refused with AddOns, the staging folder and the
   user's zip unchanged, the Forever question, and the CurseForge listing.
 - `scripts/test-ui.js`: the dialog's filter, the install call, the row, the

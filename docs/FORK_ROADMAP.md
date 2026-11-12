@@ -39,7 +39,7 @@ Last updated: 12 November 2026.
   AddonForge installs a copy through the same hardened path as a download and
   records it as managed with source `local`, never updated by the app. See
   [PROVIDER_INTEGRATIONS.md](PROVIDER_INTEGRATIONS.md#local-zip-file). After
-  it: `cargo test` 138 passed, 2 ignored; UI checks pass; security check OK.
+  it: `cargo test` 140 passed, 2 ignored; UI checks pass; security check OK.
 - With the owner's real key (12 November 2026), CLI search works and returns
   `allowModDistribution` as expected: every opted-out result is link only,
   every allowed one resolves to a download. A download and install with

@@ -1168,13 +1168,16 @@ async fn install_from(
         protected_package_folders(&fresh, &[], key)
     };
     let addons2 = addons.clone();
-    let folders = tokio::task::spawn_blocking(move || install::place_locked(&zip, &addons2, &protected))
-        .await
-        .map_err(err)?
-        .map_err(|e| {
-            loge!("place {key}: {e}");
-            e.to_string()
-        })?;
+    // A zip install of the same addon gives way to its real source: see `takeover_plan`.
+    let (folders, taken_over) = tokio::task::spawn_blocking(move || {
+        install::place_planned(&zip, &addons2, |found| Ok(takeover_plan(&fresh, protected, found)))
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| {
+        loge!("place {key}: {e}");
+        e.to_string()
+    })?;
     let rec = Installed {
         source: src.kind().into(),
         source_id: src.id(),
@@ -1182,11 +1185,57 @@ async fn install_from(
         folders,
         installed_at: state::now_secs(),
     };
-    let (key_owned, rec_saved) = (key.to_string(), rec.clone());
-    change_settings(app, move |st| record_install(st, &key_owned, &rec_saved)).await?;
+    let (key_owned, rec_saved, from) = (key.to_string(), rec.clone(), taken_over.clone());
+    change_settings(app, move |st| record_taking_over(st, &key_owned, &rec_saved, from.as_deref())).await?;
     drop(lock);
+    if let Some(old) = &taken_over {
+        logi!("{key} replaces {old}, which was installed from a zip file");
+    }
     logi!("installed {key} {} ({} folders)", rec.version, rec.folders.len());
     Ok(rec)
+}
+
+/// The folder owners a download from a real source must not replace, and the
+/// zip install it takes over, if any. A zip install gives way when it is the
+/// only package owning any of the archive's folders and the archive holds
+/// every one of its folders: that is the same addon arriving from somewhere
+/// the app can update it from, so it takes the zip's place instead of being
+/// refused (a zip's key need not match the source's, e.g. `folder:Foo` against
+/// `github:owner/Foo`). Every other owner stays protected.
+fn takeover_plan(
+    st: &AppState,
+    mut protected: HashMap<String, String>,
+    found: &[install::Found],
+) -> (HashMap<String, String>, Option<String>) {
+    let targets: HashSet<String> = found.iter().map(|(_, name)| name.to_ascii_lowercase()).collect();
+    let owners: HashSet<&String> = targets.iter().filter_map(|t| protected.get(t)).collect();
+    let taken = match owners.into_iter().collect::<Vec<_>>().as_slice() {
+        [only] => st
+            .installed
+            .get(*only)
+            .filter(|rec| rec.source == LOCAL_SOURCE && rec.folders.iter().all(|f| targets.contains(&f.to_ascii_lowercase())))
+            .map(|_| (*only).clone()),
+        _ => None,
+    };
+    if let Some(old) = &taken {
+        protected.retain(|_, owner| owner != old);
+    }
+    (protected, taken)
+}
+
+/// Save an install. When it took over a zip install, that record goes
+/// (`record_install` moves all its folders to `key`) and its pin and ignore
+/// carry over to `key`.
+fn record_taking_over(st: &mut AppState, key: &str, rec: &Installed, taken_over: Option<&str>) {
+    record_install(st, key, rec);
+    if let Some(old) = taken_over.filter(|old| *old != key) {
+        if st.pinned.remove(old) {
+            st.pinned.insert(key.to_string());
+        }
+        if st.ignored.remove(old) {
+            st.ignored.insert(key.to_string());
+        }
+    }
 }
 
 /// Which package a zip's folders are, the version their TOC gives, and the
@@ -3484,6 +3533,76 @@ mod local_zip_tests {
         assert!(p.pinned, "the pin carries over");
         assert_eq!(p.installed_version.as_deref(), Some("1.3.0"));
         assert_eq!(p.from_zip.as_deref(), Some("NetherSuite-1.3.0.zip"));
+    }
+
+    #[test]
+    fn its_real_source_takes_over_a_zip_install_with_another_key() {
+        let s = Scratch::new("takeover");
+        let cat = Catalog::default();
+        let mut st = AppState::default();
+        // Not in the catalogue and no provider id: only a GitHub website in its TOC.
+        let toc = |v: &str| format!("## Interface: 16001\n## Version: {v}\n## X-Website: https://github.com/owner/Foo\n");
+        let v1 = toc("1.0");
+        let zip = s.zip("Foo-1.0.zip", &[("Foo/Foo.toc", v1.as_bytes()), ("Foo/old.lua", b"old")]);
+        let (zip_key, rec) = s.install(&zip, &st, &cat, false).unwrap();
+        assert_eq!(zip_key, "folder:Foo");
+        record_install(&mut st, &zip_key, &rec);
+        st.pinned.insert(zip_key.clone());
+        // Installed from GitHub, it gets GitHub's key, which the zip's record does not have.
+        let src = Source::Github("owner/Foo".into());
+        let key = key_for_source(&cat, &st, &src, None);
+        assert_eq!(key, "github:owner/Foo");
+        // A GitHub release, placed the way `install_from` places it.
+        let v2 = toc("1.1");
+        let release = s.zip("release.zip", &[("Foo-1.1/Foo.toc", v2.as_bytes()), ("Foo-1.1/new.lua", b"new")]);
+        let protected = protected_package_folders(&st, &[], &key);
+        let (folders, taken) =
+            install::place_planned(&release, &s.addons(), |found| Ok(takeover_plan(&st, protected, found))).unwrap();
+        assert_eq!(taken.as_deref(), Some("folder:Foo"));
+        let rec = Installed { source: src.kind().into(), source_id: src.id(), version: "1.1".into(), folders, installed_at: 0 };
+        record_taking_over(&mut st, &key, &rec, taken.as_deref());
+        assert!(!st.installed.contains_key("folder:Foo"), "the zip's record is gone");
+        assert!(st.pinned.contains(&key) && !st.pinned.contains("folder:Foo"), "its pin carries over");
+        assert!(s.addons().join("Foo").join("new.lua").exists());
+        assert!(!s.addons().join("Foo").join("old.lua").exists());
+        let p = s.packages(&st, &cat).remove(0);
+        assert_eq!(p.key, key);
+        assert_eq!(p.source, Some(src), "updatable again");
+        assert_eq!(p.from_zip, None);
+        assert!(p.managed && p.pinned);
+    }
+
+    #[test]
+    fn a_zip_install_gives_way_only_to_an_archive_that_replaces_all_of_it_and_nothing_else() {
+        let found = |names: &[&str]| -> Vec<install::Found> { names.iter().map(|n| (PathBuf::new(), n.to_string())).collect() };
+        let record = |source: &str, folders: &[&str]| Installed {
+            source: source.into(),
+            source_id: "x".into(),
+            version: "1".into(),
+            folders: folders.iter().map(|f| f.to_string()).collect(),
+            installed_at: 0,
+        };
+        let mut st = AppState::default();
+        st.installed.insert("folder:Foo".into(), record(LOCAL_SOURCE, &["Foo", "FooData"]));
+        st.installed.insert("github:a/Shared".into(), record("github", &["Shared"]));
+        st.installed.insert("github:a/Bar".into(), record("github", &["Bar"]));
+        let protected = protected_package_folders(&st, &[], "github:owner/Foo");
+        let plan = |names: &[&str]| takeover_plan(&st, protected.clone(), &found(names));
+        // All of the zip's folders, nothing of anyone else's: taken over, and only it.
+        let (left, taken) = plan(&["Foo", "FOODATA"]);
+        assert_eq!(taken.as_deref(), Some("folder:Foo"));
+        assert!(!left.values().any(|owner| owner == "folder:Foo"));
+        assert_eq!(left.get("shared").map(String::as_str), Some("github:a/Shared"), "other packages stay protected");
+        // Part of the zip install: not the same addon, so it stays protected.
+        let (left, taken) = plan(&["Foo"]);
+        assert_eq!(taken, None);
+        assert_eq!(left.get("foo").map(String::as_str), Some("folder:Foo"));
+        // Another package's folder in the archive as well: nothing is taken over.
+        assert_eq!(plan(&["Foo", "FooData", "Shared"]).1, None);
+        // An install from a real source is never taken over this way.
+        assert_eq!(plan(&["Bar"]).1, None);
+        // And with no owner at all there is nothing to take over.
+        assert_eq!(plan(&["New"]).1, None);
     }
 
     #[test]

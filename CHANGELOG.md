@@ -19,7 +19,9 @@ Based on AddonForge v0.4.0 (build 31 source, commit `7bdd46b`).
   The addon then appears in My addons as installed by AddonForge (pin it,
   remove it) with the status "From a zip file", and AddonForge never claims it
   can update it: Update is not offered, and a newer zip installs over it the
-  same way. If its TOC carries a CurseForge project id, the update check still
+  same way. Installing the same addon later from GitHub or CurseForge takes
+  over the zip install (keeping its pin) when the download holds all of its
+  folders and none of another addon's. If its TOC carries a CurseForge project id, the update check still
   says when CurseForge lists a newer version ("X is on CurseForge; you have
   Y"). A zip with no Forever TOC asks first, as a download does. Nothing is
   downloaded and no CurseForge page is read; the only request is the
