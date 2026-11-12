@@ -311,5 +311,11 @@ select:focus-visible { outline:1px solid var(--accent); outline-offset:2px; }
 .thead :is(.sort-head, .installed-sort-head)[data-direction="asc"]::after { content: " ↑"; }
 .thead :is(.sort-head, .installed-sort-head)[data-direction="desc"]::after { content: " ↓"; }
 
+/* CurseForge API key (Settings): the box takes the row; the state line says on or off at a glance. */
+#curse-key { flex: 1; min-width: 220px; }
+.key-state.set { color: var(--ok); }
+.key-state.missing { color: var(--warn); }
+.hint.nokey { margin: 0 0 10px; }
+.hint.nokey .link { font-size: 12px; }
 /* An update only CurseForge can hand over: amber, like anything you must do yourself. */
 .badge.curse-update { color: var(--warn, #e0a33a); font-weight: 600; }

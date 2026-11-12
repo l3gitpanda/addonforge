@@ -2,11 +2,16 @@ use std::env;
 use std::fs;
 use std::path::Path;
 
-/// The CurseForge 3rd Party API key is baked into release builds only. It is
-/// read from `private/curseforge-key.txt` (gitignored) or the
-/// `ADDONFORGE_CURSEFORGE_KEY` environment variable at compile time and written
-/// as a plain string constant, never anywhere else. Builds without it (CI,
-/// contributors) simply have CurseForge turned off. See the maintainer's permission record.
+/// An optional built-in CurseForge 3rd Party API key. It is read from
+/// `private/curseforge-key.txt` (gitignored) or the `ADDONFORGE_CURSEFORGE_KEY`
+/// environment variable at compile time and written as a plain string constant,
+/// never anywhere else.
+///
+/// Only bake one in if your agreement with CurseForge covers shipping it:
+/// their terms issue a key to one developer and forbid passing it on, and a
+/// key inside a published exe can be read back by anyone. Builds without one
+/// (the default, CI, contributors) use the key each user adds in Settings,
+/// which is kept in the OS credential store. See docs/PROVIDER_INTEGRATIONS.md.
 fn curseforge_key() -> Option<String> {
     println!("cargo:rerun-if-env-changed=ADDONFORGE_CURSEFORGE_KEY");
     let file = Path::new(env!("CARGO_MANIFEST_DIR")).join("..").join("private").join("curseforge-key.txt");
@@ -32,7 +37,7 @@ fn main() {
     fs::write(&out, body).expect("write cf_key.rs");
     println!(
         "cargo:warning=CurseForge key: {}",
-        if key.is_empty() { "not present (CurseForge disabled in this build)" } else { "embedded" }
+        if key.is_empty() { "none built in (users add their own in Settings)" } else { "embedded" }
     );
 
     tauri_build::build()

@@ -16,12 +16,38 @@ use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use std::path::PathBuf;
 
-pub const LATEST_URL: &str =
-    "https://github.com/Topher121/AddonForge/releases/latest/download/latest.json";
+/// Where this build's own releases are published: the address of the newest
+/// release's signed `latest.json`. `None` means the build has no update
+/// channel, so it never looks for, offers or installs an update of itself.
+///
+/// This fork has none yet. The original project's channel
+/// (`github.com/Topher121/AddonForge/releases/latest/download/latest.json`) is
+/// deliberately not used: its manifest is signed with the original's key,
+/// which this app still holds to check the catalogue, so a fork build that
+/// followed it would pass every check and replace itself with the original
+/// app. Set this, and the fork's own key in `signing.rs`, once the fork
+/// publishes signed releases.
+pub const UPDATE_CHANNEL: Option<&str> = None;
 
 /// Where non-Windows users get sent to update by hand.
 #[cfg(not(windows))]
 pub const RELEASES_URL: &str = "https://github.com/Topher121/AddonForge/releases/latest";
+
+/// What every update action answers in a build with no update channel.
+pub const OFF: &str = "This build does not update itself: the fork has no releases of its own yet";
+
+/// Does this build have an update channel of its own?
+pub fn enabled() -> bool {
+    UPDATE_CHANNEL.is_some()
+}
+
+/// The manifest to ask for, or `None` when this build must not look at all.
+/// A test address (`ADDONFORGE_UPDATE_URL`, or the CLI's argument) can stand
+/// in for the channel but cannot create one: without a channel of its own a
+/// build asks nobody, whatever it is pointed at.
+fn manifest_url(channel: Option<&str>, url_override: Option<&str>) -> Option<String> {
+    channel.map(|own| url_override.unwrap_or(own).to_string())
+}
 
 pub fn version() -> &'static str {
     env!("CARGO_PKG_VERSION")
@@ -74,6 +100,8 @@ pub struct SelfUpdate {
     pub available: bool,
     pub tag: String,
     pub error: Option<String>,
+    /// False when this build has no update channel: nothing was asked.
+    pub enabled: bool,
 }
 
 fn semver(v: &str) -> (u64, u64, u64) {
@@ -88,7 +116,11 @@ pub fn is_newer(latest: &Latest) -> bool {
 }
 
 pub async fn check(client: &reqwest::Client, url_override: Option<&str>) -> SelfUpdate {
-    let url = url_override.unwrap_or(LATEST_URL);
+    check_channel(client, UPDATE_CHANNEL, url_override).await
+}
+
+async fn check_channel(client: &reqwest::Client, channel: Option<&str>, url_override: Option<&str>) -> SelfUpdate {
+    let url = manifest_url(channel, url_override);
     let mut out = SelfUpdate {
         current_version: version().into(),
         current_build: build(),
@@ -96,7 +128,11 @@ pub async fn check(client: &reqwest::Client, url_override: Option<&str>) -> Self
         available: false,
         tag: String::new(),
         error: None,
+        enabled: url.is_some(),
     };
+    // No channel: no request, and nothing that could be offered or installed.
+    let Some(url) = url else { return out };
+    let url = url.as_str();
     // The manifest is trusted only with a valid signature from the release key.
     let res: anyhow::Result<Latest> = async {
         let manifest = crate::icons::read_capped(client.get(url).send().await?.error_for_status()?, 1024 * 1024).await?;
@@ -137,6 +173,11 @@ fn is_portable(exe: &Path) -> bool {
 /// the new process deletes the `.old` file.
 #[cfg(windows)]
 pub async fn apply(client: &reqwest::Client, latest: &Latest) -> anyhow::Result<PathBuf> {
+    // Checked here as well as in `check`: whatever a caller hands over, a build
+    // with no update channel never replaces its own exe.
+    if !enabled() {
+        anyhow::bail!(OFF);
+    }
     let current = std::env::current_exe()?;
     let dir = current.parent().ok_or_else(|| anyhow::anyhow!("no exe dir"))?;
     let name = if latest.filename.is_empty() {
@@ -384,6 +425,70 @@ mod tests {
         assert!(!is_newer(&same));
         let next = Latest { version: "999.0.0".into(), ..Default::default() };
         assert!(is_newer(&next));
+    }
+}
+
+#[cfg(test)]
+mod channel_tests {
+    use super::*;
+
+    /// The original project's manifest: correctly signed by a key this app holds.
+    const ORIGINAL: &str = "https://github.com/Topher121/AddonForge/releases/latest/download/latest.json";
+
+    #[test]
+    fn a_fork_build_never_follows_the_original_projects_releases() {
+        let follows_original = UPDATE_CHANNEL.is_some_and(|u| u.to_ascii_lowercase().contains("topher121/addonforge"));
+        assert!(!follows_original, "UPDATE_CHANNEL points at the original project: a fork build would replace itself with it");
+        assert_eq!(enabled(), UPDATE_CHANNEL.is_some());
+    }
+
+    #[test]
+    fn a_test_address_cannot_create_a_channel() {
+        // No channel: nobody is asked, whatever the override says.
+        assert_eq!(manifest_url(None, None), None);
+        assert_eq!(manifest_url(None, Some(ORIGINAL)), None);
+        // With a channel, the channel is asked, and a test address can stand in for it.
+        let own = "https://example.invalid/fork/latest.json";
+        assert_eq!(manifest_url(Some(own), None).as_deref(), Some(own));
+        assert_eq!(manifest_url(Some(own), Some("https://example.invalid/test.json")).as_deref(), Some("https://example.invalid/test.json"));
+    }
+
+    #[test]
+    fn with_no_channel_a_check_asks_nobody_and_offers_nothing() {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        // Nothing listens on port 1 of this machine. Had the check sent a
+        // request it would come back as an error; it must not send one.
+        let client = reqwest::Client::new();
+        let r = rt.block_on(check_channel(&client, None, Some("http://127.0.0.1:1/latest.json")));
+        assert!(!r.enabled);
+        assert!(!r.available);
+        assert!(r.latest.is_none());
+        assert_eq!(r.error, None, "a request was made");
+        // The same address with a channel present is asked, and fails: the test above is not vacuous.
+        let asked = rt.block_on(check_channel(&client, Some("http://127.0.0.1:1/latest.json"), None));
+        assert!(asked.enabled);
+        assert!(asked.error.is_some());
+        assert!(!asked.available);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn with_no_channel_nothing_is_ever_installed() {
+        if enabled() {
+            return; // This build has its own channel: nothing to guard.
+        }
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        // A manifest that looks complete. The refusal must come before any download.
+        let latest = Latest {
+            version: "999.0.0".into(),
+            build: 999,
+            url: "http://127.0.0.1:1/AddonForge-v999.0.0-b999.exe".into(),
+            filename: "AddonForge-v999.0.0-b999.exe".into(),
+            sha256: "0".repeat(64),
+            ..Default::default()
+        };
+        let err = rt.block_on(apply(&reqwest::Client::new(), &latest)).unwrap_err().to_string();
+        assert_eq!(err, OFF);
     }
 }
 

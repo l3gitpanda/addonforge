@@ -6,6 +6,7 @@ mod icons;
 mod install;
 pub mod log;
 mod recycle;
+mod secrets;
 mod selfupdate;
 mod signing;
 mod sources;
@@ -38,6 +39,8 @@ struct App {
     stats: Mutex<Option<Stats>>,
     /// icon key -> data URL, for this run (disk cache underneath).
     icon_cache: Mutex<HashMap<String, Option<String>>>,
+    /// The OS credential store, or why it could not be opened.
+    secrets: Result<Arc<secrets::Secrets>, String>,
 }
 
 type Shared = Arc<App>;
@@ -148,6 +151,16 @@ fn pick_source(
         }
     }
     None
+}
+
+/// Why a row whose only home is CurseForge is link only. Without a key the
+/// fix is the user's to make, so say so; with one, the author has opted out.
+fn curse_only_note(author_opted_out: bool, have_key: bool) -> &'static str {
+    if have_key || author_opted_out {
+        "Only on CurseForge: AddonForge can't update it, but the link works"
+    } else {
+        "On CurseForge: add your CurseForge API key in Settings and AddonForge can update it. The link works meanwhile"
+    }
 }
 
 /// Group scanned folders into packages and attach sources.
@@ -398,7 +411,7 @@ fn build_packages(st: &AppState, cat: &Catalog, folders: &[AddonFolder]) -> Vec<
             Some(_) => ("unknown".to_string(), String::new()),
             None if curse_id.is_some() => (
                 "curse-only".to_string(),
-                "Only on CurseForge: AddonForge can't update it, but the link works".to_string(),
+                curse_only_note(entry.is_some_and(|e| e.curse_locked), sources::curseforge::available()).to_string(),
             ),
             None => ("no-source".to_string(), "No update source found in its files".to_string()),
         };
@@ -746,10 +759,18 @@ struct Settings {
     start_tab: Option<String>,
     /// ForeverSVFix is set up on this install (see `wow::svfix_present`).
     svfix: bool,
-    /// This build carries the CurseForge API key (search + install from CurseForge).
+    /// There is a CurseForge API key to use (search + install from CurseForge).
     has_curse: bool,
+    /// Whose key that is: "user" (their own), "embedded" (built in) or "none".
+    curse_key: sources::curseforge::KeyOrigin,
+    /// Where CurseForge hands out API keys.
+    curse_key_page: String,
+    /// What the OS credential store is called here; `None` when it could not be opened.
+    secret_store: Option<String>,
     /// Install everything that has an update right after the launch check.
     auto_update: bool,
+    /// This build can update itself (it has an update channel of its own).
+    self_update: bool,
     /// What a reversible removal is called here: "Recycle Bin" or "Trash".
     recycle_label: String,
 }
@@ -776,7 +797,11 @@ async fn get_settings(app: State<'_, Shared>) -> Result<Settings, String> {
         start_tab: std::env::var("ADDONFORGE_TAB").ok().filter(|t| !t.is_empty()),
         svfix: st.install_path.as_deref().map(|p| wow::svfix_present(Path::new(p))).unwrap_or(false),
         has_curse: sources::curseforge::available(),
+        curse_key: sources::curseforge::key_origin(),
+        curse_key_page: sources::curseforge::KEY_PAGE.into(),
+        secret_store: app.secrets.as_ref().ok().map(|s| s.label().to_string()),
         auto_update: st.auto_update,
+        self_update: selfupdate::enabled(),
         recycle_label: recycle::label().into(),
     })
 }
@@ -1023,11 +1048,17 @@ async fn install_from(
     logi!("install {key} from {} {} -> {shown_url}", src.label(), remote.version);
     // Staged outside the addons folder: the install lock and recovery never touch it.
     let tmp = state::AppState::dir().join("downloads");
-    let zip = install::download(&app.client, &remote.download_url, &tmp, &remote.filename)
+    // CurseForge's CDN wants the API key on a download; no other source gets a header.
+    let (auth, from_curse) = match src {
+        Source::Curse(_) => (sources::curseforge::download_headers(&remote.download_url), true),
+        _ => (Vec::new(), false),
+    };
+    let zip = install::download(&app.client, &remote.download_url, &tmp, &remote.filename, &auth)
         .await
         .map_err(|e| {
-            loge!("download {key}: {e}");
-            e.to_string()
+            let msg = if from_curse { sources::curseforge::download_error(&e) } else { e.to_string() };
+            loge!("download {key}: {msg}");
+            msg
         })?;
     // From here to the saved state, the addons lock is held and the owners are read
     // from disk, so another copy of the app cannot change them in between.
@@ -1296,7 +1327,7 @@ async fn curse_search(
     index: Option<u32>,
 ) -> Result<CurseSearch, String> {
     if !sources::curseforge::available() {
-        return Err("CurseForge isn't available in this build".into());
+        return Err(sources::curseforge::NO_KEY.into());
     }
     let page = sources::curseforge::Page {
         query,
@@ -1348,7 +1379,7 @@ async fn install_curse(
     allow_non_forever: Option<bool>,
 ) -> Result<Package, String> {
     if !sources::curseforge::available() {
-        return Err("CurseForge isn't available in this build".into());
+        return Err(sources::curseforge::NO_KEY.into());
     }
     let cat = catalog_cached(&app).await;
     let st = app.state.lock().await.clone();
@@ -1356,6 +1387,65 @@ async fn install_curse(
     let key = key_for_source(&cat, &st, &src, None);
     install_from(&app, &key, &src, None, allow_non_forever.unwrap_or(false)).await?;
     refreshed(&app, &key).await
+}
+
+/// What the UI needs after the CurseForge key changed.
+#[derive(Serialize)]
+struct CurseKeyState {
+    has_curse: bool,
+    curse_key: sources::curseforge::KeyOrigin,
+}
+
+fn curse_key_state() -> CurseKeyState {
+    CurseKeyState { has_curse: sources::curseforge::available(), curse_key: sources::curseforge::key_origin() }
+}
+
+fn secret_store(app: &App) -> Result<Arc<secrets::Secrets>, String> {
+    app.secrets.clone().map_err(|e| format!("This PC's credential store can't be used, so the key can't be kept safely: {e}"))
+}
+
+/// Save the user's own CurseForge API key. It is checked, tested against
+/// CurseForge once, and only then stored, in the OS credential store and
+/// nowhere else. Neither the key nor any part of it is logged.
+async fn save_curse_key(app: &App, key: &str) -> Result<CurseKeyState, String> {
+    let key = sources::curseforge::checked_key(key)?;
+    let store = secret_store(app)?;
+    sources::curseforge::verify_key(&app.client, &key).await?;
+    let stored = key.clone();
+    let label = store.label();
+    tokio::task::spawn_blocking(move || store.set(secrets::CURSEFORGE_KEY, &stored))
+        .await
+        .map_err(err)?
+        .map_err(|e| format!("CurseForge accepted the key, but it could not be saved: {e}"))?;
+    sources::curseforge::set_user_key(Some(key));
+    logi!("curseforge: the user's own API key was tested and saved in {label}");
+    Ok(curse_key_state())
+}
+
+/// Forget the user's own CurseForge API key. A built-in key, if this build
+/// has one, takes over again.
+async fn forget_curse_key(app: &App) -> Result<CurseKeyState, String> {
+    let store = secret_store(app)?;
+    let had_one = sources::curseforge::key_origin() == sources::curseforge::KeyOrigin::User;
+    tokio::task::spawn_blocking(move || store.delete(secrets::CURSEFORGE_KEY))
+        .await
+        .map_err(err)?
+        .map_err(|e| format!("The key could not be removed: {e}"))?;
+    sources::curseforge::set_user_key(None);
+    if had_one {
+        logi!("curseforge: the user's own API key was removed");
+    }
+    Ok(curse_key_state())
+}
+
+#[tauri::command]
+async fn set_curse_key(app: State<'_, Shared>, key: String) -> Result<CurseKeyState, String> {
+    save_curse_key(&app, &key).await
+}
+
+#[tauri::command]
+async fn clear_curse_key(app: State<'_, Shared>) -> Result<CurseKeyState, String> {
+    forget_curse_key(&app).await
 }
 
 /// The source the user picked in the Find addons row ("github", "curse",
@@ -1366,7 +1456,7 @@ fn chosen_source(e: &CatalogEntry, kind: &str) -> Result<Source, String> {
         "github" => e.github.clone().map(Source::Github).ok_or_else(missing),
         "curse" => {
             if !sources::curseforge::available() {
-                return Err("CurseForge isn't available in this build".into());
+                return Err(sources::curseforge::NO_KEY.into());
             }
             if e.curse_locked {
                 return Err(format!("{}'s author only distributes it through CurseForge's own app", e.name));
@@ -1629,6 +1719,10 @@ async fn import_list(app: State<'_, Shared>, path: String) -> Result<Vec<ImportR
 async fn check_self_update(app: State<'_, Shared>) -> Result<selfupdate::SelfUpdate, String> {
     let url = std::env::var("ADDONFORGE_UPDATE_URL").ok();
     let mut r = selfupdate::check(&app.client, url.as_deref()).await;
+    if !r.enabled {
+        // No update channel in this build: nothing was asked, nothing to report.
+        return Ok(r);
+    }
     let st = app.state.lock().await;
     if st.skip_self_update.as_deref() == Some(r.tag.as_str()) {
         r.available = false;
@@ -1651,6 +1745,9 @@ async fn skip_self_update(app: State<'_, Shared>, tag: String) -> Result<(), Str
 async fn apply_self_update(app: State<'_, Shared>, handle: tauri::AppHandle) -> Result<String, String> {
     let url = std::env::var("ADDONFORGE_UPDATE_URL").ok();
     let r = selfupdate::check(&app.client, url.as_deref()).await;
+    if !r.enabled {
+        return Err(selfupdate::OFF.into());
+    }
     let latest = r.latest.ok_or_else(|| r.error.unwrap_or_else(|| "no update info".into()))?;
     if !r.available {
         return Err("Already up to date".into());
@@ -1672,6 +1769,9 @@ async fn apply_self_update(app: State<'_, Shared>, handle: tauri::AppHandle) -> 
 #[cfg(not(windows))]
 #[tauri::command]
 async fn apply_self_update() -> Result<String, String> {
+    if !selfupdate::enabled() {
+        return Err(selfupdate::OFF.into());
+    }
     tauri_plugin_opener::open_url(selfupdate::RELEASES_URL, None::<&str>).map_err(err)?;
     Ok("browser".into())
 }
@@ -1763,8 +1863,13 @@ async fn diagnostics(app: State<'_, Shared>) -> Result<String, String> {
         None => s.push_str("Install: none selected\n"),
     }
     s.push_str(&format!(
-        "CurseForge: {} | pre-releases: {} | pinned: {} | ignored: {}\n",
-        if sources::curseforge::available() { "yes" } else { "no" },
+        "CurseForge key: {} | pre-releases: {} | pinned: {} | ignored: {}\n",
+        // Whose key it is, never the key.
+        match sources::curseforge::key_origin() {
+            sources::curseforge::KeyOrigin::User => "your own",
+            sources::curseforge::KeyOrigin::Embedded => "built in",
+            sources::curseforge::KeyOrigin::None => "none",
+        },
         st.allow_prerelease,
         st.pinned.len(),
         st.ignored.len()
@@ -1839,12 +1944,22 @@ fn make_app() -> Shared {
     if let Some(p) = &st.install_path {
         install::clean_tmp(&addons_dir(p));
     }
+    let secrets = secrets::Secrets::os().map(Arc::new).map_err(|e| e.to_string());
+    match &secrets {
+        Ok(store) => match store.get(secrets::CURSEFORGE_KEY) {
+            Ok(Some(key)) => sources::curseforge::set_user_key(Some(key)),
+            Ok(None) => {}
+            Err(e) => loge!("curseforge key: could not read it from {}: {e}", store.label()),
+        },
+        Err(e) => loge!("credential store unavailable: {e}"),
+    }
     Arc::new(App {
         client,
         state: Mutex::new(st),
         catalog: Mutex::new(None),
         stats: Mutex::new(None),
         icon_cache: Mutex::new(HashMap::new()),
+        secrets,
     })
 }
 
@@ -1984,6 +2099,18 @@ pub fn cli(args: &[String]) -> i32 {
                 let rec = install_from(&app, &key, &src, None, force).await?;
                 Ok(serde_json::to_value(rec).unwrap())
             }
+            "curse-key" => match args.get(1).map(String::as_str) {
+                Some("status") | None => Ok(serde_json::to_value(curse_key_state()).unwrap()),
+                // The key is read from standard input, never from the command
+                // line, so it stays out of shell history and the process list.
+                Some("set") => {
+                    let mut line = String::new();
+                    std::io::stdin().read_line(&mut line).map_err(err)?;
+                    Ok(serde_json::to_value(save_curse_key(&app, &line).await?).unwrap())
+                }
+                Some("clear") => Ok(serde_json::to_value(forget_curse_key(&app).await?).unwrap()),
+                Some(_) => Err("usage: curse-key status | set (reads the key from standard input) | clear".into()),
+            },
             "github" => {
                 let repo = args.get(1).and_then(|r| sources::parse_github_repo(r)).ok_or("usage: github <owner/repo>")?;
                 let force = args.iter().any(|a| a == "--force");
@@ -2038,11 +2165,16 @@ pub fn cli(args: &[String]) -> i32 {
                 Ok(serde_json::to_value(r).unwrap())
             }
             #[cfg(not(windows))]
+            "selfupdate" if !selfupdate::enabled() => Err(selfupdate::OFF.into()),
+            #[cfg(not(windows))]
             "selfupdate" => Err(format!("self-update is Windows-only; get the new version from {}", selfupdate::RELEASES_URL)),
             #[cfg(windows)]
             "selfupdate" => {
                 let url = args.get(1).cloned().or_else(|| std::env::var("ADDONFORGE_UPDATE_URL").ok());
                 let r = selfupdate::check(&app.client, url.as_deref()).await;
+                if !r.enabled {
+                    return Err(selfupdate::OFF.into());
+                }
                 let latest = r.latest.ok_or("no update info")?;
                 let force = args.iter().any(|a| a == "--force");
                 if !r.available && !force {
@@ -2055,7 +2187,7 @@ pub fn cli(args: &[String]) -> i32 {
                 let st = app.state.lock().await.clone();
                 Ok(serde_json::json!({ "state": st, "log_tail": log::tail(20) }))
             }
-            _ => Err("usage: addonforge --cli installs | use <dir> | scan | check | catalog | resolve <id..>|all | update <key> [--force] | install <catalog-id> [--force] | github <owner/repo> [--force] | prerelease on|off | pin|ignore <key> on|off | export <file> | selfcheck [url] | selfupdate [url] [--force] | diag".into()),
+            _ => Err("usage: addonforge --cli installs | use <dir> | scan | check | catalog | resolve <id..>|all | update <key> [--force] | install <catalog-id> [--force] | github <owner/repo> [--force] | search <text> | curse <project id> [--force] | curse-key status|set|clear | prerelease on|off | pin|ignore <key> on|off | export <file> | selfcheck [url] | selfupdate [url] [--force] | diag".into()),
         }
     });
     match res {
@@ -2096,6 +2228,8 @@ pub fn run() {
             bundles,
             curse_search,
             install_curse,
+            set_curse_key,
+            clear_curse_key,
             package_icons,
             catalog_icons,
             addon_details,
@@ -2183,6 +2317,26 @@ mod tests {
         // Nothing readable as a version never claims an update.
         assert!(!later_version("latest", "Bartender4-4.16.0"));
         assert!(!later_version("4.15.3", "nightly build"));
+    }
+
+    #[test]
+    fn a_curseforge_only_row_says_when_a_key_would_fix_it() {
+        // No key and the author allows third-party downloads: the user can fix it.
+        assert!(curse_only_note(false, false).contains("add your CurseForge API key"));
+        // The author opted out, or there is a key and still no source: a key changes nothing.
+        for (opted_out, have_key) in [(true, false), (true, true), (false, true)] {
+            assert!(!curse_only_note(opted_out, have_key).contains("API key"), "{opted_out} {have_key}");
+        }
+    }
+
+    #[test]
+    fn settings_on_disk_have_no_place_for_an_api_key() {
+        // The CurseForge key lives in the OS credential store. If a field for it
+        // ever appears in the settings file, this fails.
+        let json = serde_json::to_string(&AppState::default()).unwrap().to_ascii_lowercase();
+        assert!(!json.contains("curse"), "{json}");
+        let fields: Vec<&str> = json.split('"').filter(|part| part.contains("key")).collect();
+        assert_eq!(fields, ["wago_key"], "only the unused legacy Wago field mentions a key");
     }
 
     #[test]

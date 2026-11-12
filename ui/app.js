@@ -1094,9 +1094,94 @@ async function loadSettings() {
     : "No game folder selected — choose one in Settings";
   $("install-line").classList.toggle("connected", !!settings.install);
   $("svfix-note").classList.toggle("hidden", !settings.svfix);
-  $("browse-filter").placeholder = settings.has_curse ? "Search addons, or type owner/repo from GitHub" : "Search the catalogue, or type owner/repo from GitHub";
+  // A build with no update channel of its own says so instead of offering a check.
+  $("btn-selfcheck").classList.toggle("hidden", settings.self_update === false);
+  $("selfupdate-off").classList.toggle("hidden", settings.self_update !== false);
+  renderCurseKey();
   $("footer-open-folder").disabled = !settings.install;
 }
+
+// ---------------------------------------------------------------- CurseForge API key
+// The key itself never comes back from the core: the UI only learns whose key
+// is in use ("user", "embedded" or "none") and what the credential store is called.
+function curseKeyStatus(s) {
+  const origin = s?.curse_key || "none";
+  const store = s?.secret_store;
+  if (origin === "user") return `Your CurseForge API key is saved in ${store || "your system's credential store"}. CurseForge search and installs are on.`;
+  if (origin === "embedded") return "This build carries a CurseForge API key, so CurseForge search and installs are on. Add your own key to use it instead.";
+  if (!store) return "No CurseForge API key, and this PC's credential store can't be opened, so one can't be saved here.";
+  return "No CurseForge API key yet, so CurseForge search and installs are off.";
+}
+
+function renderCurseKey() {
+  const origin = settings?.curse_key || "none";
+  const state = $("curse-key-state");
+  state.textContent = curseKeyStatus(settings);
+  state.classList.toggle("set", origin !== "none");
+  state.classList.toggle("missing", origin === "none");
+  $("btn-curse-key-clear").classList.toggle("hidden", origin !== "user");
+  $("curse-key").placeholder = origin === "user" ? "Paste a new key to replace the saved one" : "Paste your CurseForge API key";
+  if (settings?.secret_store) $("secret-store").textContent = settings.secret_store;
+  if (settings?.curse_key_page) $("curse-key-page").dataset.url = settings.curse_key_page;
+  $("curse-nokey").classList.toggle("hidden", !!settings?.has_curse);
+  $("browse-filter").placeholder = settings?.has_curse ? "Search addons, or type owner/repo from GitHub" : "Search the catalogue, or type owner/repo from GitHub";
+}
+
+/// The key was saved or removed: CurseForge rows, the source pickers and the
+/// installed addons can all gain or lose CurseForge as a source.
+async function curseKeyChanged(state) {
+  settings.has_curse = state.has_curse;
+  settings.curse_key = state.curse_key;
+  renderCurseKey();
+  curse.seq++;
+  Object.assign(curse, { key: "", query: "", rows: [], total: 0, loaded: 0, loading: false });
+  renderCurseRows();
+  renderCatalog();
+  if (settings.install) await checkUpdates();
+}
+
+async function saveCurseKey() {
+  if (busy) return;
+  const input = $("curse-key");
+  const btn = $("btn-curse-key-save");
+  setBusy(true);
+  btn.textContent = "Testing…";
+  let state = null;
+  try {
+    state = await invoke("set_curse_key", { key: input.value });
+    input.value = "";
+    toast("CurseForge accepted the key. Search and installs from CurseForge are on.");
+  } catch (err) {
+    toast(String(err), true);
+  } finally {
+    btn.textContent = "Save and test";
+    setBusy(false);
+  }
+  if (state) await curseKeyChanged(state);
+}
+
+async function removeCurseKey() {
+  if (busy) return;
+  const ok = await confirmModal(`<p>Remove your CurseForge API key from this PC?</p><p class="muted">CurseForge search and installs stop until you add a key again. Addons you already installed stay as they are.</p>`, "Remove key");
+  if (!ok) return;
+  setBusy(true);
+  let state = null;
+  try {
+    state = await invoke("clear_curse_key");
+    toast("Your CurseForge API key was removed from this PC.");
+  } catch (err) {
+    toast(String(err), true);
+  } finally {
+    setBusy(false);
+  }
+  if (state) await curseKeyChanged(state);
+}
+
+$("btn-curse-key-save").onclick = saveCurseKey;
+$("btn-curse-key-clear").onclick = removeCurseKey;
+$("curse-key").addEventListener("keydown", (e) => {
+  if (e.key === "Enter") saveCurseKey();
+});
 
 async function detect() {
   $("detected").innerHTML = `<span class="muted"><span class="spinner"></span> Scanning drives…</span>`;
@@ -1294,6 +1379,13 @@ async function checkSelf(manual = false) {
     selfUpdate = await invoke("check_self_update");
   } catch (err) {
     if (manual) toast(String(err), true);
+    return;
+  }
+  // `enabled: false` means this build has no update channel: nothing was asked,
+  // so there is nothing to offer, and "up to date" would be a claim nobody checked.
+  if (selfUpdate.enabled === false) {
+    $("selfupdate").classList.add("hidden");
+    if (manual) toast("This build does not update itself yet");
     return;
   }
   if (selfUpdate.available && selfUpdate.latest) {

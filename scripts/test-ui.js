@@ -436,6 +436,101 @@ assert.ok(parseFloat(menu.style.right) >= 12, 'Options stay inside the right edg
   await removingMine;
   assert.match(element('toast').textContent, /Removed Mine/);
 
-  run('clearTimeout(toastTimer)');
-  console.log('UI checks passed: counts, eligible updates, failure priority and retry, filters, search, escaping, empty states, modal focus and cancellation, sort direction and remote pagination, saved preferences, backups and folder actions, CurseForge-only rows and reversible removal.');
+  // CurseForge API key. The state line says whose key is in use; the key itself
+  // never comes back from the core, and a saved one does not stay on screen.
+  run(`settings = { has_curse: false, curse_key: 'none', secret_store: 'Windows Credential Manager', curse_key_page: 'https://console.curseforge.com/' };
+    packages = []; curse.key = ''; curse.rows = []; renderCurseKey();`);
+  assert.match(element('curse-key-state').textContent, /No CurseForge API key yet/);
+  assert.equal(element('secret-store').textContent, 'Windows Credential Manager');
+  assert.equal(element('curse-key-page').dataset.url, 'https://console.curseforge.com/');
+  assert.match(element('browse-filter').placeholder, /Search the catalogue/);
+  assert.match(run(`curseKeyStatus({ curse_key: 'none', secret_store: null })`), /can't be opened/);
+  assert.match(run(`curseKeyStatus({ curse_key: 'embedded', secret_store: 'x' })`), /This build carries/);
+  assert.match(run(`curseKeyStatus(null)`), /No CurseForge API key/);
+
+  // A key CurseForge refuses changes nothing and stays in the box to be corrected.
+  element('curse-key').value = 'typed-key-that-is-refused';
+  invokeReply = (command) => command === 'set_curse_key' ? Promise.reject('CurseForge did not accept that key for World of Warcraft.') : Promise.resolve([]);
+  await element('btn-curse-key-save').onclick();
+  assert.equal(invokeCalls.at(-1).command, 'set_curse_key');
+  assert.equal(JSON.stringify(invokeCalls.at(-1).args), '{"key":"typed-key-that-is-refused"}');
+  assert.match(element('toast').textContent, /did not accept/);
+  assert.match(element('toast').className, /bad/);
+  assert.equal(element('curse-key').value, 'typed-key-that-is-refused');
+  assert.equal(run('settings.has_curse'), false);
+  assert.equal(run('busy'), false, 'A refused key releases the interface');
+  assert.equal(element('btn-curse-key-save').textContent, 'Save and test');
+
+  // An accepted key turns CurseForge on at once and is cleared from the box.
+  element('curse-key').value = 'typed-key-that-is-accepted';
+  invokeReply = (command) => Promise.resolve(command === 'set_curse_key' ? { has_curse: true, curse_key: 'user' } : command === 'curse_search' ? { rows: [], total: 0 } : []);
+  await element('btn-curse-key-save').onclick();
+  assert.equal(element('curse-key').value, '', 'A saved key does not stay on screen');
+  assert.equal(run('settings.has_curse'), true);
+  assert.equal(run('settings.curse_key'), 'user');
+  assert.match(element('curse-key-state').textContent, /saved in Windows Credential Manager/);
+  assert.match(element('browse-filter').placeholder, /Search addons/);
+  assert.match(element('curse-key').placeholder, /replace the saved one/);
+  assert.doesNotMatch(element('toast').textContent + element('curse-key-state').textContent, /typed-key/, 'The key is never echoed back');
+  assert.equal(invokeCalls.at(-1).command, 'curse_search', 'CurseForge rows load as soon as there is a key');
+
+  // Removing asks first; cancelling leaves the key alone.
+  const callsBeforeCancel = invokeCalls.length;
+  const cancelledRemoval = element('btn-curse-key-clear').onclick();
+  assert.match(element('modal-text').innerHTML, /Remove your CurseForge API key/);
+  assert.equal(element('modal-yes').textContent, 'Remove key');
+  element('modal-no').onclick();
+  await cancelledRemoval;
+  assert.equal(invokeCalls.length, callsBeforeCancel, 'Cancel removes nothing');
+  assert.equal(run('settings.curse_key'), 'user');
+  invokeReply = (command) => Promise.resolve(command === 'clear_curse_key' ? { has_curse: false, curse_key: 'none' } : []);
+  const removingKey = element('btn-curse-key-clear').onclick();
+  element('modal-yes').onclick();
+  await removingKey;
+  assert.ok(invokeCalls.slice(callsBeforeCancel).some((c) => c.command === 'clear_curse_key'));
+  assert.equal(run('settings.has_curse'), false);
+  assert.match(element('curse-key-state').textContent, /No CurseForge API key yet/);
+  assert.match(element('toast').textContent, /removed from this PC/);
+  assert.equal(run('curse.rows.length'), 0, 'CurseForge rows go when the key goes');
+
+  // Self-update. A build with no update channel offers nothing and does not
+  // claim to be up to date; a build with one shows the banner as before.
+  let bannerHidden = null;
+  element('selfupdate').classList = { add: () => { bannerHidden = true; }, remove: () => { bannerHidden = false; }, toggle() {} };
+  invokeReply = () => Promise.resolve({ enabled: false, available: false, latest: null, tag: '', error: null });
+  element('toast').textContent = '';
+  await run('checkSelf(false)');
+  assert.equal(invokeCalls.at(-1).command, 'check_self_update');
+  assert.equal(bannerHidden, true, 'No banner without an update channel');
+  assert.equal(element('toast').textContent, '', 'The launch check says nothing');
+  await run('checkSelf(true)');
+  assert.match(element('toast').textContent, /does not update itself/);
+  assert.doesNotMatch(element('toast').textContent, /up to date/);
+  // Even a reply that claims an update is ignored when the channel is off.
+  invokeReply = () => Promise.resolve({ enabled: false, available: true, latest: { version: '9.9.9', build: 99 }, tag: 'v9.9.9-b99', error: null });
+  bannerHidden = null;
+  await run('checkSelf(false)');
+  assert.equal(bannerHidden, true, 'An offer is never shown when the channel is off');
+  invokeReply = () => Promise.resolve({ enabled: true, available: true, latest: { version: '9.9.9', build: 99 }, tag: 'v9.9.9-b99', error: null });
+  await run('checkSelf(false)');
+  assert.equal(bannerHidden, false, 'A build with its own channel still offers its update');
+  assert.match(element('selfupdate-text').innerHTML, /v9\.9\.9<\/b> build 99/);
+  invokeReply = () => Promise.resolve({ enabled: true, available: false, latest: null, tag: '', error: null });
+  await run('checkSelf(true)');
+  assert.match(element('toast').textContent, /up to date/);
+
+  // Settings swap the "check now" link for a plain statement when there is no channel.
+  const shown = {};
+  for (const id of ['btn-selfcheck', 'selfupdate-off']) element(id).classList = { add() {}, remove() {}, toggle: (cls, on) => { if (cls === 'hidden') shown[id] = !on; } };
+  invokeReply = () => Promise.resolve({ version: '0.4.0', build: 0, self_update: false });
+  await run('loadSettings()');
+  assert.equal(shown['btn-selfcheck'], false);
+  assert.equal(shown['selfupdate-off'], true);
+  invokeReply = () => Promise.resolve({ version: '0.4.0', build: 0, self_update: true });
+  await run('loadSettings()');
+  assert.equal(shown['btn-selfcheck'], true);
+  assert.equal(shown['selfupdate-off'], false);
+
+  run('clearTimeout(toastTimer); clearTimeout(curse.timer)');
+  console.log('UI checks passed: counts, eligible updates, failure priority and retry, filters, search, escaping, empty states, modal focus and cancellation, sort direction and remote pagination, saved preferences, backups and folder actions, CurseForge-only rows, reversible removal, the CurseForge API key and self-update being off without a channel.');
 })().catch((error) => { console.error(error); process.exitCode = 1; });
