@@ -31,10 +31,12 @@ something from the safety checks.
 
 ## Checked and sound
 
-- **Path traversal in archives.** `zip` 2.4's `enclosed_name` refuses names
-  that would leave the folder. The existing test covers `../`; absolute and
-  drive-letter names rely on the crate's documented behaviour and are not
-  tested here yet.
+- **Path traversal in archives.** The `zip` crate's `enclosed_name` refuses
+  names that would leave the folder. Tested for `../`, and since the move to
+  `zip` 9 (13 November 2026) for absolute, drive-letter, UNC and backslash
+  `..` names too: each is refused, or (a leading `/`) read as relative and
+  placed inside the folder. `zip` 9 also refuses a `:` in a name itself; the
+  app checks the raw name first so the message stays specific.
 - **Symlinks in archives.** A symlink entry is written as a plain file holding
   the link text; no link is ever created (new test
   `a_symlink_entry_is_written_as_a_plain_file`). The safety scan also refuses

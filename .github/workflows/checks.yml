@@ -1,0 +1,65 @@
+name: Dependency and secret checks
+
+# New advisories are published all the time, so this also runs every week on
+# main, not only when the code changes.
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "17 6 * * 1" # Mondays, 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    name: cargo deny
+    runs-on: ubuntu-latest
+    env:
+      # Bump both together; the checksum is the release's own `.sha256` file.
+      DENY_VERSION: "0.20.2"
+      DENY_SHA256: "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: Install cargo-deny (pinned, checksum checked)
+        run: |
+          set -euo pipefail
+          f="cargo-deny-${DENY_VERSION}-x86_64-unknown-linux-musl.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$f" "https://github.com/EmbarkStudios/cargo-deny/releases/download/${DENY_VERSION}/$f"
+          echo "${DENY_SHA256}  $RUNNER_TEMP/$f" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/bin"
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP/bin" --strip-components=1
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: Advisories, licences, bans, sources (src-tauri/deny.toml)
+        working-directory: src-tauri
+        run: cargo deny --locked check --hide-inclusion-graph
+
+  secrets:
+    name: secret scan
+    runs-on: ubuntu-latest
+    env:
+      # Bump both together; the checksum is from the release's checksums.txt.
+      GITLEAKS_VERSION: "8.30.1"
+      GITLEAKS_SHA256: "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb"
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0 # every commit, not only the last one
+          persist-credentials: false
+      - name: Install gitleaks (pinned, checksum checked)
+        run: |
+          set -euo pipefail
+          f="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          curl -sSfL -o "$RUNNER_TEMP/$f" "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/$f"
+          echo "${GITLEAKS_SHA256}  $RUNNER_TEMP/$f" | sha256sum -c -
+          mkdir -p "$RUNNER_TEMP/gitleaks"
+          tar -xzf "$RUNNER_TEMP/$f" -C "$RUNNER_TEMP/gitleaks" gitleaks
+      - name: Scan the whole history (findings are redacted)
+        run: '"$RUNNER_TEMP/gitleaks/gitleaks" git . --redact --no-banner'
