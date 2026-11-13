@@ -11,7 +11,7 @@
   <div class="brand">
     <img src="icon.svg" alt="" class="mark">
     <span class="name">AddonForge</span>
-
+    <button id="offline-badge" class="offline-badge hidden" data-navigate="settings" title="Offline mode is on: AddonForge makes no network requests. Change it in Settings, Network">Offline</button>
   </div>
   <button class="game-settings" data-navigate="settings" title="View or change your WoW installation folder">WoW: Forever <span>Installation settings</span></button>
 </header>
@@ -152,6 +152,36 @@
       </div>
     </div>
 
+    <div class="pref" id="pref-network">
+      <div class="pref-label">Network</div>
+      <div class="pref-body">
+        <label class="chk big"><input type="checkbox" id="net-offline"> Offline mode</label>
+        <p class="hint">No network request of any kind until you turn it off. Scanning, pinning, removing, installing from a zip and WTF backups still work, and the catalogue is the copy built into the app. Nothing is checked for updates.</p>
+        <div id="net-switches" class="net-switches">
+          <p class="hint sub">When AddonForge opens</p>
+          <label class="chk"><input type="checkbox" id="net-launch-check"> Check installed addons for updates</label>
+          <label class="chk"><input type="checkbox" id="net-catalogue"> Refresh the catalogue from GitHub <span class="muted">(signed; off, the built-in copy is used)</span></label>
+          <label class="chk"><input type="checkbox" id="net-stats"> Download totals for the catalogue</label>
+          <p class="hint sub">Addon sites</p>
+          <label class="chk"><input type="checkbox" id="net-curseforge"> CurseForge</label>
+          <label class="chk"><input type="checkbox" id="net-github"> GitHub <span class="muted">(releases, README and release notes)</span></label>
+          <label class="chk"><input type="checkbox" id="net-wowinterface"> WoWInterface</label>
+          <label class="chk"><input type="checkbox" id="net-tukui"> Tukui</label>
+          <label class="chk"><input type="checkbox" id="net-images"> Remote images <span class="muted">(avatars, catalogue icons, README pictures)</span></label>
+          <p class="hint">A site that is off is never contacted: searching or installing from it stops with a message, its addons say "Not checked", and its images stay off. Whatever is on, each request may only reach its own site's hosts, on every redirect.</p>
+        </div>
+        <details id="net-activity" class="net-activity">
+          <summary>Network activity since AddonForge opened</summary>
+          <div class="row">
+            <span id="net-activity-sum" class="hint inline grow"></span>
+            <button id="btn-net-refresh" class="btn small">Refresh</button>
+          </div>
+          <div id="net-activity-list" class="net-list"></div>
+          <p class="hint">Kept in memory for this session only, never saved. Paths are shown without their query strings.</p>
+        </details>
+      </div>
+    </div>
+
     <div class="pref" id="pref-curse">
       <div class="pref-label">CurseForge</div>
       <div class="pref-body">
@@ -204,7 +234,7 @@
       <div class="pref-label">About</div>
       <div class="pref-body about">
         <p>AddonForge <span id="version"></span> (private build).</p>
-        <p class="hint">No accounts, no ads, no analytics. Talks only to the addon sites (GitHub, CurseForge, WoWInterface, TukUI, and Wago for preview images). At launch it reads the catalogue and download totals from GitHub, then checks your installed addons for updates. This build does not look for updates to itself. CurseForge search and installs use your own API key (see CurseForge above); it is kept in your system's credential store and only ever sent to CurseForge's API and download servers. The only CurseForge data kept on disk is the project id and version name of what you installed.</p>
+        <p class="hint">No accounts, no ads, no analytics. Talks only to the addon sites (GitHub, CurseForge, WoWInterface, TukUI, and Wago for preview images). At launch it reads the catalogue and download totals from GitHub, then checks your installed addons for updates; Network above turns any of that off, or everything. This build does not look for updates to itself. CurseForge search and installs use your own API key (see CurseForge above); it is kept in your system's credential store and only ever sent to CurseForge's API and download servers. The only CurseForge data kept on disk is the project id and version name of what you installed.</p>
         <p class="hint">Catalogue: <span id="catalog-info">…</span><br>Settings file: <code id="state-file"></code></p>
         <p class="hint"><a href="#" data-url="https://github.com/l3gitpanda/addonforge">Source code and catalogue</a></p>
         <p class="hint">Independent project. Not affiliated with CurseForge, Overwolf, Blizzard Entertainment, Wago, WoWInterface or TukUI. World of Warcraft is a trademark of Blizzard Entertainment.</p>

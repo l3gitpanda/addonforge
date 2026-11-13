@@ -480,7 +480,13 @@ pub async fn github_details(net: &crate::net::Net, repo: &str) -> Details {
                         let _ = fs::write(&cache, serde_json::to_vec(&d).unwrap_or_default());
                     }
                 }
-                return Details { summary: d.summary, image: d.image_url.as_deref().and_then(preview_cached), changelog: d.changelog, changelog_version: d.changelog_version };
+                // From the disk cache when it is there; fetched (through the gate) when it was
+                // skipped, for example while remote images were switched off.
+                let image = match d.image_url.as_deref() {
+                    Some(u) => preview_image(net, u).await,
+                    None => None,
+                };
+                return Details { summary: d.summary, image, changelog: d.changelog, changelog_version: d.changelog_version };
             }
         }
     }
@@ -531,7 +537,11 @@ pub async fn github_details(net: &crate::net::Net, repo: &str) -> Details {
         None => None,
     };
     let _ = fs::create_dir_all(cache_dir());
-    let cached = CachedDetails { summary: summary.clone(), image_url: image_url.filter(|_| image.is_some()), changelog: changelog.clone(), changelog_version: changelog_version.clone(), changelog_checked };
+    // A picture that failed is not remembered; one skipped because remote images
+    // are off is, so it appears once they are on again.
+    let images_off = net.refusal(crate::net::Purpose::Images).is_some();
+    let image_url = image_url.filter(|_| image.is_some() || images_off);
+    let cached = CachedDetails { summary: summary.clone(), image_url, changelog: changelog.clone(), changelog_version: changelog_version.clone(), changelog_checked };
     let _ = fs::write(&cache, serde_json::to_vec(&cached).unwrap_or_default());
     Details { summary, image, changelog, changelog_version }
 }

@@ -8,6 +8,26 @@ Based on AddonForge v0.4.0 (build 31 source, commit `7bdd46b`).
 
 ### Added
 
+- **Network settings and offline mode** (Settings, Network). Every request
+  the app makes now goes through one gate in the core, which decides before
+  anything is sent:
+  - **Offline mode** stops every request. Scanning, pinning, removing,
+    installing from a zip and WTF backups keep working, the catalogue is the
+    copy built into the app, and a header badge says the app is offline.
+  - **When AddonForge opens**: the update check, the catalogue refresh and the
+    download totals can each be switched off.
+  - **Addon sites**: CurseForge, GitHub, WoWInterface and Tukui can each be
+    switched off. A site that is off is never contacted: searching or
+    installing from it stops with a sentence saying so, its addons read "Not
+    checked" instead of failing, and its images stay off too.
+  - **Remote images** (avatars, catalogue icons, README pictures) can be
+    switched off.
+  - **Network activity**: what was sent or refused since the app opened, by
+    purpose, host and path (no query strings), with counts. Kept in memory only.
+
+  Everything is on by default, so a settings file from before behaves as it
+  did. `addonforge --cli network [<switch> on|off]` does the same from the
+  command line, and diagnostics name the settings.
 - **Install from a zip file.** For addons AddonForge is not allowed to
   download, such as the many CurseForge projects whose authors allow only
   CurseForge's own app (NetherSuite, Details!, DBM, Bagnon, Leatrix Plus,
@@ -77,6 +97,14 @@ Based on AddonForge v0.4.0 (build 31 source, commit `7bdd46b`).
 
 From the Phase One audit; details and the open items in `docs/AUDIT.md`.
 
+- **Redirects are held to each site's own hosts** (AUDIT O1). Every request
+  names what it is for, and may only reach that purpose's hosts, on the first
+  request and on every redirect: a GitHub download may move between GitHub's
+  hosts, a WoWInterface download stays on WoWInterface's, an image stays on the
+  image hosts. Before, only CurseForge's key-carrying requests were held;
+  everything else could be redirected to any https host, and the hosts in
+  Wago, WoWInterface, Tukui and GitHub replies were taken as given.
+
 - **Archive names Windows would store differently are refused.** A zip entry
   such as `notes.lua:payload.exe` became a hidden alternate data stream that
   the executable check never saw. Device names (`CON`, `NUL`, `COM1`...),
@@ -101,8 +129,17 @@ From the Phase One audit; details and the open items in `docs/AUDIT.md`.
 
 ### Not verified
 
-- A search, install and update with a real CurseForge key. The fork has no key
-  yet. See `docs/PROVIDER_INTEGRATIONS.md`.
+- A revoked CurseForge key in use, and the status the CDN returns for one.
+  Search, install, update and an opted-out addon were run with the owner's
+  real key on 13 November 2026, against a throwaway game folder. See
+  `docs/PROVIDER_INTEGRATIONS.md`.
+- The network switches in the running window were not clicked by hand. The
+  window was checked by screenshot (offline badge, "Not checked" rows, the
+  Network section), the handlers are covered by `scripts/test-ui.js` with
+  Tauri's API stubbed, and the gate itself by Rust tests and the CLI.
+- A live WoWInterface download through the gate: the catalogue prefers GitHub
+  or CurseForge for every WoWInterface addon tried. Its host rule is tested
+  against the real download address, which serves without a redirect.
 - Install from zip in the running window: the file dialog and dropping a file
   were not driven by hand. The CLI path was run end to end against a throwaway
   game folder, the window was checked by screenshot, and the dialog and drop

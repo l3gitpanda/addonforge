@@ -93,11 +93,11 @@ AddonForge does not collect or send personal data and has no telemetry, accounts
 
 - github.com, api.github.com, raw.githubusercontent.com and GitHub's release download hosts: the addon catalogue and GitHub-hosted addons (addon details, README images and author avatars).
 - api.curseforge.com, edge.forgecdn.net and the forgecdn.net host it hands downloads to: CurseForge addon lookups and downloads (only once you have added your own API key, and only for addons whose authors allow third-party downloads).
-- api.mmoui.com: WoWInterface addon lookups and the download hosts it returns.
-- api.tukui.org: TukUI addon lookups and the download hosts it returns.
+- api.mmoui.com and cdn.wowinterface.com: WoWInterface addon lookups and downloads.
+- api.tukui.org: TukUI addon lookups and downloads.
 - media.forgecdn.net, wago.io hosts, www.wowinterface.com and cdn-wow.mmoui.com: only for the preview image, when the first screenshot in a GitHub-hosted addon's README lives there.
 
-Every request is HTTPS, and a site can redirect it to another host (GitHub's downloads do). At launch the app reads the catalogue and download totals from this repo, then checks your installed addons for updates; there's no setting to turn that off yet. It never looks for updates to itself.
+Every request is HTTPS and goes through one gate in the app's core: each kind of request may only reach its own site's hosts, on the first request and on every redirect (GitHub's downloads redirect between GitHub's own hosts). At launch the app reads the catalogue and download totals from this repo, then checks your installed addons for updates. **Settings, Network** turns each of those off, switches off any addon site or remote images, or turns on offline mode, which stops every request; it also lists what was sent or refused since the app opened. The app never looks for updates to itself.
 
 These requests reveal your IP address, your AddonForge version (in the User-Agent) and the addon names or IDs being checked, as with any web request. Your CurseForge API key is sent only to CurseForge: to api.curseforge.com, and with a file download to its forgecdn.net servers, which have required it since July 2026. A request carrying the key is never allowed to be redirected anywhere else.
 

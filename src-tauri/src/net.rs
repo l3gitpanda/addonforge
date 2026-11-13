@@ -354,7 +354,7 @@ fn check_address(hosts: &Hosts, purpose: Purpose, url: &reqwest::Url) -> Result<
     }
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     let allowed = match &hosts.only {
-        Some(list) => list.iter().any(|h| *h == host),
+        Some(list) => list.contains(&host),
         None => purpose.rules().iter().any(|r| r.matches(&host)),
     };
     if allowed {

@@ -329,3 +329,21 @@ select:focus-visible { outline:1px solid var(--accent); outline-offset:2px; }
 .drop-card { display: flex; flex-direction: column; gap: 6px; max-width: 360px; padding: 28px 32px; border: 2px dashed var(--accent); border-radius: 8px; background: var(--bg-2); color: var(--text); text-align: center; font-size: 13px; }
 .drop-card b { font-size: 16px; color: var(--accent-2); }
 .drop-card span { color: var(--muted); }
+
+/* Network settings: offline badge, switches, activity list */
+.offline-badge { font-size: 11px; color: var(--warn); background: transparent; border: 1px solid currentColor; border-radius: 999px; padding: 1px 8px; cursor: pointer; }
+.net-switches { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; margin-top: 10px; }
+.net-switches.dim { opacity: .5; }
+.net-switches .chk { white-space: normal; }
+.pref-body .hint.sub { color: var(--muted); font-weight: 500; margin: 8px 0 0; }
+.net-activity { margin-top: 14px; }
+.net-activity summary { cursor: pointer; color: var(--text); font-size: 13px; margin-bottom: 6px; }
+.net-list { max-height: 260px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; font-size: 12px; }
+.net-list:empty { display: none; }
+.net-row { display: grid; grid-template-columns: 64px 104px minmax(0, 1fr) auto; gap: 8px; padding: 3px 8px; border-bottom: 1px solid var(--line); align-items: baseline; }
+.net-row:last-child { border-bottom: 0; }
+.net-row .t, .net-row .p { color: var(--muted); }
+.net-row .u { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.net-row .o { white-space: nowrap; }
+.net-row.refused .o { color: var(--warn); }
+.net-row.failed .o { color: var(--bad); }

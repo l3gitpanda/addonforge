@@ -9,7 +9,7 @@ fully verified), **Tested** (verified, how is stated), **Blocked**, **Deferred**
 "not audited", nobody on the fork has read that code closely yet: do not treat
 it as either sound or broken.
 
-Last updated: 12 November 2026.
+Last updated: 13 November 2026.
 
 ## Where things stand
 
@@ -40,10 +40,18 @@ Last updated: 12 November 2026.
   records it as managed with source `local`, never updated by the app. See
   [PROVIDER_INTEGRATIONS.md](PROVIDER_INTEGRATIONS.md#local-zip-file). After
   it: `cargo test` 140 passed, 2 ignored; UI checks pass; security check OK.
-- With the owner's real key (12 November 2026), CLI search works and returns
-  `allowModDistribution` as expected: every opted-out result is link only,
-  every allowed one resolves to a download. A download and install with
-  the key have not been observed by a session yet.
+- CurseForge verified live with the owner's key (13 November 2026), through
+  the CLI against a throwaway game folder: search, install (the download
+  carries the key), update check, update, an opted-out addon refused, a
+  made-up key refused without touching the stored one. Not seen: a revoked key
+  in use. Details in [PROVIDER_INTEGRATIONS.md](PROVIDER_INTEGRATIONS.md).
+- Sixth change, branch `network-gate`: **the network gate** (`net.rs`). Every
+  request names its purpose and goes through one `Net`, which checks offline
+  mode, the per-site and per-feature switches, and the purpose's hosts before
+  the first request and on every redirect hop (closes AUDIT O1). Settings has a
+  Network section with the switches and an in-memory activity list; there is
+  `--cli network`. After it: `cargo test` 157 passed, 2 ignored; UI checks
+  pass; security check OK.
 
 ## Do first: the fork still behaves as the original
 
@@ -71,7 +79,7 @@ Read closely by the fork:
 | Source model | `sources/mod.rs` | One `enum Source` with a `match` per operation; no provider trait. Fine for five sources, the thing to change for Phase Two. |
 | Settings file | `state.rs` | Atomic write, `.bak` fallback, cross-process lock. Holds an unused `wago_key` field from before build 25. |
 | Build-time key | `build.rs` | Plain constant in the binary. Off unless a key file or env var is supplied. |
-| HTTP client | `lib.rs` `make_app` | One shared `reqwest` client: HTTPS only on every hop, 10 redirect limit, 120 s timeout. No per-provider switch, no offline mode, no request log. |
+| HTTP client | `net.rs` `Net` | One `reqwest` client per purpose, built on first use, behind the gate: HTTPS only on every hop, 10 redirect limit, 120 s timeout, the CurseForge key kept on CurseForge, each purpose held to its hosts on every hop, offline mode and switches, an in-memory activity list. Nothing else builds a client (tests aside). |
 | Download | `install.rs` `download` | 512 MB cap, sanitised file name, staged outside the AddOns folder. Partial and abandoned zips are now removed (AUDIT A5). |
 | Install path | `install.rs` | Extraction limits, safety scan, placement, rollback, recovery, junctions. Hardened: names Windows stores differently (alternate data streams, devices, trailing dots) and empty or duplicate target folders are refused. See [AUDIT.md](AUDIT.md). A zip from disk (`stage_local`, `place_planned`) goes through the same path; `place_planned` only adds a hook that runs after the checks and before anything moves. |
 | Removal | `recycle.rs`, `install.rs` | Links unlinked before the shell call. Network-share paths fixed (A7). Open: replaced unmanaged folders are deleted, not recycled (O3); unverified behaviour on drives with no Recycle Bin (O6). |
@@ -89,32 +97,44 @@ Not audited yet (upstream; status unknown): `wow.rs` and
 
 ### Outbound hosts (from the README and the code read so far)
 
-`github.com`, `api.github.com`, `raw.githubusercontent.com` and GitHub's
-download hosts; `api.curseforge.com`; `edge.forgecdn.net` and the
-`forgecdn.net` host it redirects to; `api.mmoui.com` and the hosts it returns;
-`api.tukui.org` and the hosts it returns; for preview images only:
-`media.forgecdn.net`, wago.io hosts, `www.wowinterface.com`,
-`cdn-wow.mmoui.com`. Confirmed against every call site in the audit. "The
-hosts it returns" is unbounded: Wago, WoWInterface, Tukui and GitHub release
-data can name any `https` host, and any request can be redirected to one
-(AUDIT O1).
+Since the network gate, the list is in code: `Purpose::rules` in `net.rs`,
+one list per purpose, applied to the first request and every redirect.
 
-At launch, by upstream's own description: catalogue, download totals, update
-manifest, then an update check of every installed addon. A fork build no longer
-requests the update manifest (confirmed in the log). No setting turns the rest
-off.
+| Purpose | Hosts (a bare domain covers its subdomains) |
+|---|---|
+| Catalogue, download totals | `raw.githubusercontent.com` only |
+| GitHub (and the dormant app update) | `github.com`, `githubusercontent.com` |
+| Addon details (README, release notes) | `api.github.com`, `raw.githubusercontent.com` only |
+| CurseForge | `api.curseforge.com` only, `forgecdn.net` |
+| WoWInterface | `mmoui.com`, `wowinterface.com` |
+| Tukui | `tukui.org` |
+| Wago (dormant) | `wago.io` |
+| Images | `github.com` only, `githubusercontent.com`, `media.forgecdn.net`, `wago.io`, `www.wowinterface.com`, `cdn-wow.mmoui.com` |
+
+Checked on 13 November 2026 against what each site actually serves from:
+GitHub release files go `github.com` to `release-assets.githubusercontent.com`,
+tagged source zips to `codeload.github.com`, avatars to
+`avatars.githubusercontent.com`; WoWInterface serves zips from
+`cdn.wowinterface.com` and Tukui from `api.tukui.org`, neither redirecting. If a
+site moves its downloads elsewhere, installs from it stop with "A ... request
+tried to reach X, which is not one of the hosts it may use": widen the rule in
+`Purpose::rules` only for a host the site really uses.
+
+At launch: catalogue, download totals, then an update check of every installed
+addon (the fork requests no update manifest). Each can be switched off in
+Settings, Network, or all of it with offline mode.
 
 ## Phase One: privacy and security (P0)
 
 | Item | Status | Notes |
 |---|---|---|
 | Fork identity (table above) | Not started | Needs the owner's decisions. Do before anything is released. |
-| Offline mode, enforced in Rust | Not started | One gate in front of the shared client, not a UI switch. Scan, cached data, local management and backups must keep working. |
-| Optional startup requests | Not started | Catalogue, stats, self-update check, addon update check: each switchable. |
-| Per-provider network permissions | Not started | Same gate, keyed by provider or feature. |
-| Network activity log and dashboard | Not started | Each request attributed to a provider or feature. |
-| Update-check frequency | Not started | |
-| Optional remote images | Not started | `icons.rs` fetches README images and avatars; this tells GitHub the installed addon list (AUDIT O8). |
+| Offline mode, enforced in Rust | **Tested** | `net::Net` refuses every request before a connection is opened (`gate_tests::offline_mode_opens_no_connection`). The update check skips every row with a "Not checked" note and asks nothing (`network_gate_tests`); the catalogue is the built-in copy; zip installs, removal and backups need no network. CLI run: check, install and search all refused with one sentence. Window: screenshot only. |
+| Optional startup requests | **Tested** | Catalogue refresh, download totals and the update check at launch each have a switch. The self-update check has none: it is dormant (no channel) and only offline mode governs it. |
+| Per-provider network permissions | **Tested** | CurseForge, GitHub (including README and release notes), WoWInterface, Tukui. A site that is off keeps its images off too. A switched-off source is not swapped for another one: an addon whose source is off says so rather than silently updating from somewhere else. |
+| Network activity log and dashboard | Implemented | In memory only: the last 300 requests, redirect hops and refusals with purpose, host, path (no query) and outcome, plus counts per purpose, in Settings, Network. Not a full dashboard: no byte counts, nothing kept across sessions. |
+| Update-check frequency | Not started | Today: at launch (switchable) and by hand. |
+| Optional remote images | **Tested** | One switch for avatars, catalogue icons and README pictures (AUDIT O8). Cached images still show; nothing is fetched. |
 | Response size limits | **Tested** | `net.rs`; every reply body capped (AUDIT N1), remote image decoding limited (N2). |
 | Credentials in the OS store | **Tested** for the CurseForge key | Unit test on an in-memory store; a round trip through the real Windows Credential Manager (`cargo test -- --ignored real_credential_store`). macOS Keychain path compiles on paper only: not built or run. |
 | Credential migration from old settings | Not started | `wago_key` in `state.json` is unused: remove it, without breaking old files. |
@@ -123,7 +143,7 @@ off.
 | Zip traversal, bombs, limits, symlinks, junctions, Unicode and case collisions, temp files, races, rollback, deletion limits | **Tested** (audited, hardened) | Malformed-archive tests for alternate data streams, device names, trailing dots, bombs, entry counts, symlink entries, empty and duplicate target names, case collisions, partial downloads. Not tested: absolute and drive-letter entry names (rely on the `zip` crate). Open items O3, O4, O6 in AUDIT.md. |
 | Update verification | Audited, dormant | Sound (AUDIT "Checked and sound"). Open: no freeze protection (O9). Decide with the fork's update channel. |
 | Download integrity against provider hashes | Not started | CurseForge and GitHub publish hashes that are not compared (AUDIT O2). |
-| Redirect validation | **Tested** for CurseForge | Key-bearing requests cannot leave CurseForge's hosts. Other sources: HTTPS-only and a hop limit, nothing more. |
+| Redirect validation | **Tested** for every purpose | Each purpose's hosts on every hop (AUDIT O1, fixed), on top of HTTPS-only, a hop limit, and the CurseForge key kept on CurseForge's hosts. |
 | External URL handling, CSP, webview boundary | Implemented (upstream), CI-gated | Not audited beyond the config. |
 | Provider metadata validation | Not audited | |
 | CI: `cargo audit`, licence policy, secret scan, clippy, malformed-archive tests | Not started | |
@@ -134,7 +154,7 @@ off.
 | Item | Status | Notes |
 |---|---|---|
 | Provider trait | Not started | Replace the `match` in `sources/mod.rs` with a trait: search, metadata, versions, resolve, download headers, limits. `curseforge::download_headers` is the first provider-specific download hook and shows the shape. |
-| CurseForge | Implemented; live use **unverified** | Needs a real key. See PROVIDER_INTEGRATIONS.md for the open questions. |
+| CurseForge | **Tested live** (13 November 2026) | With the owner's key, against a throwaway game folder. Not seen: a revoked key. See PROVIDER_INTEGRATIONS.md. |
 | Wago | Not started | Re-check whether user-supplied keys are allowed. Link fallback exists. |
 | Local zip | **Tested** | `--cli install-zip`, Install from zip… in My addons, or drop a zip on the window. Same install path as a download; recorded as managed, source `local`, never updated; a CurseForge id in its TOC keeps the "newer on CurseForge" notice. Verified by unit tests (`install.rs`, `lib.rs` `local_zip_tests`, malformed archives included), UI checks with Tauri stubbed, the CLI end to end against a throwaway game folder, and a screenshot of the window. Not driven by hand: the file dialog and a real drop. |
 | GitLab, Codeberg, HTTPS archive | Not started | |
@@ -187,15 +207,18 @@ launch still uses the CurseForge key in the credential store, if there is one.
 1. Decide the fork's name, repo address and release signing; then fix the rest
    of the identity table above (bug-report address and User-Agent first: they
    send things to the original project on the fork's behalf).
-2. Verify CurseForge end to end with a real key: search, install, update, an
-   opted-out addon, a revoked key.
+2. ~~Verify CurseForge end to end with a real key.~~ Done 13 November 2026,
+   except a revoked key (needs the owner to revoke one, or a second key).
 3. ~~Phase One audit of `install.rs`, `recycle.rs`, `selfupdate.rs`,
    `icons.rs`, and the full list of outbound requests.~~ Done: see
    [AUDIT.md](AUDIT.md). Owner decisions it raised: O3 (recycle a replaced
    unmanaged folder, or ask first) and O5 (where WTF backups go by default).
-4. The network gate: offline mode, startup switches, per-provider permissions
-   and allowed hosts (including on every redirect hop, AUDIT O1), optional
-   remote images (O8), activity log. One design, since they share an
-   enforcement point: `make_app`'s shared client and its redirect callback,
-   with `net.rs` as the place reads already pass through.
+4. ~~The network gate.~~ Done on branch `network-gate`: offline mode,
+   startup switches, per-site switches, hosts on every redirect hop (O1),
+   remote images (O8), activity list. Left from that item: update-check
+   frequency, byte counts in the activity list.
 5. CI: `cargo audit`, `cargo deny`, clippy, secret scanning.
+6. Download integrity: compare CurseForge's file hashes and GitHub's asset
+   `digest` with what was downloaded (AUDIT O2). Fits with the provider trait
+   (Phase Two), which `net::Purpose` and `Source::purpose` now prepare.
+7. Remove the unused `wago_key` from `state.json` without breaking old files.

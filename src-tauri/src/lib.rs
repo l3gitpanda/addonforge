@@ -2023,6 +2023,11 @@ async fn set_network(app: State<'_, Shared>, network: net::Policy) -> Result<net
     if reread(&network, |p| p.stats) && !reread(&before, |p| p.stats) {
         *app.stats.lock().await = None;
     }
+    // Icons refused under the old settings are remembered as missing for this
+    // run; forget them so they can load now. The disk cache stays.
+    if network != before {
+        app.icon_cache.lock().await.clear();
+    }
     Ok(network)
 }
 
