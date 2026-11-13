@@ -716,6 +716,12 @@ assert.ok(parseFloat(menu.style.right) >= 12, 'Options stay inside the right edg
   assert.equal(JSON.stringify(invokeCalls.filter((c) => c.command === 'check_updates').at(-1).args), '{"atLaunch":true}');
   await run('checkUpdates()');
   assert.equal(JSON.stringify(invokeCalls.at(-1).args), '{"atLaunch":false}', 'Asked for by hand, the check is not the launch check');
+  // The Check button's click event never reaches the core as `atLaunch`.
+  await element('btn-check').onclick({ type: 'click', target: element('btn-check') });
+  assert.equal(invokeCalls.at(-1).command, 'check_updates');
+  assert.equal(JSON.stringify(invokeCalls.at(-1).args), '{"atLaunch":false}', 'A click is a check by hand');
+  await run(`checkUpdates({ type: 'click' })`);
+  assert.equal(JSON.stringify(invokeCalls.at(-1).args), '{"atLaunch":false}', 'Anything but true is not the launch check');
   run(`settings.network = { ...settings.network, offline: true }`);
   await run('checkUpdates()');
   assert.equal(element('toast').textContent, 'Offline mode is on, so nothing was checked.');

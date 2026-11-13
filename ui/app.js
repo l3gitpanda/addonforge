@@ -491,7 +491,8 @@ async function checkUpdates(atLaunch = false) {
   });
   renderInstalled();
   try {
-    packages = await invoke("check_updates", { atLaunch });
+    // Only a real `true` is the launch check: the core expects a boolean.
+    packages = await invoke("check_updates", { atLaunch: atLaunch === true });
     $("last-checked").textContent = `Checked at ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     renderInstalled();
     const n = packages.filter((p) => p.status === "update" && !p.ignored && !p.pinned).length;
@@ -580,7 +581,8 @@ $("livehint-skip").onclick = async () => {
   try { await invoke("dismiss_live_hint", { path: liveHintPath }); } catch (_) {}
 };
 
-$("btn-check").onclick = checkUpdates;
+// Through a wrapper: the click event must not reach `atLaunch`.
+$("btn-check").onclick = () => checkUpdates();
 $("btn-rescan").onclick = () => rescan();
 $("btn-update-all").onclick = updateAll;
 
