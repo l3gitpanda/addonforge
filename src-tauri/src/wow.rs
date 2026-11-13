@@ -75,9 +75,7 @@ pub fn describe_install(product_dir: &Path) -> Option<WowInstall> {
         && !product_dir.join("WTF").is_dir()
     {
         // Not a WoW product folder at all.
-        if read_flavor_info(product_dir).is_none() {
-            return None;
-        }
+        read_flavor_info(product_dir)?;
     }
     let product = read_flavor_info(product_dir).unwrap_or_else(|| {
         // Fall back to the folder name, e.g. "_classic_beta_" -> "classic_beta".
@@ -306,10 +304,9 @@ fn parse_toc(path: &Path, into: &mut AddonFolder) -> bool {
                     into.group = Some(val.to_string());
                 }
             }
-            "icontexture" => {
-                if into.icon_texture.is_none() {
-                    into.icon_texture = Some(val.to_string());
-                }
+            // The first IconTexture wins; a later one falls through to `_`.
+            "icontexture" if into.icon_texture.is_none() => {
+                into.icon_texture = Some(val.to_string());
             }
             _ => {}
         }
@@ -335,7 +332,7 @@ pub fn scan_addons(install: &Path) -> Vec<AddonFolder> {
             out.push(af);
         }
     }
-    out.sort_by(|a, b| a.folder.to_ascii_lowercase().cmp(&b.folder.to_ascii_lowercase()));
+    out.sort_by_key(|a| a.folder.to_ascii_lowercase());
     out
 }
 
