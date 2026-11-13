@@ -486,16 +486,43 @@ struct FpResult {
     exact_matches: Vec<FpMatch>,
 }
 
-/// Folder name (lowercase) -> match, from the last fingerprint lookup. Memory
-/// only, never written anywhere, gone when the app closes.
-fn folder_matches() -> &'static Mutex<HashMap<String, FolderMatch>> {
-    static M: OnceLock<Mutex<HashMap<String, FolderMatch>>> = OnceLock::new();
-    M.get_or_init(|| Mutex::new(HashMap::new()))
+/// The last fingerprint lookup: which AddOns folder it was for, and folder name
+/// (lowercase) -> match. Memory only, never written anywhere, gone when the
+/// app closes.
+#[derive(Default)]
+struct Remembered {
+    addons: String,
+    by_folder: HashMap<String, FolderMatch>,
 }
 
-/// What the last lookup said about this folder, if anything.
-pub fn folder_match(folder: &str) -> Option<FolderMatch> {
-    folder_matches().lock().ok()?.get(&folder.to_ascii_lowercase()).cloned()
+fn folder_matches() -> &'static Mutex<Remembered> {
+    static M: OnceLock<Mutex<Remembered>> = OnceLock::new();
+    M.get_or_init(|| Mutex::new(Remembered::default()))
+}
+
+/// One AddOns folder, compared the way Windows names paths: case-insensitively.
+fn addons_key(addons: &std::path::Path) -> String {
+    addons.to_string_lossy().to_lowercase()
+}
+
+/// What the last lookup said about `folder` in this AddOns folder. A lookup
+/// made for another game folder answers nothing, so switching installs never
+/// carries one install's matches over to a same-named folder in the other.
+pub fn folder_match(addons: &std::path::Path, folder: &str) -> Option<FolderMatch> {
+    let m = folder_matches().lock().ok()?;
+    if m.addons != addons_key(addons) {
+        return None;
+    }
+    m.by_folder.get(&folder.to_ascii_lowercase()).cloned()
+}
+
+/// Replace everything remembered with one lookup's answer. A folder not asked
+/// about in that lookup (it now has an id of its own, or it is gone) keeps no
+/// match from an earlier one.
+fn remember_matches(addons: &std::path::Path, by_folder: HashMap<String, FolderMatch>) {
+    if let Ok(mut m) = folder_matches().lock() {
+        *m = Remembered { addons: addons_key(addons), by_folder };
+    }
 }
 
 /// Turn the API's answer into folder -> match. Only exact matches count, and a
@@ -523,10 +550,17 @@ fn matches_from(result: FpResult, asked: &[(String, u32)]) -> HashMap<String, Fo
     out
 }
 
-/// Ask CurseForge which projects these folders came from: ONE request for the
-/// lot. `folders` is (folder name, fingerprint). Replaces the remembered answer
-/// for every folder asked about; returns how many matched.
-pub async fn match_fingerprints(net: &crate::net::Net, folders: &[(String, u32)]) -> anyhow::Result<usize> {
+/// Ask CurseForge which projects these folders (in `addons`) came from: ONE
+/// request for the lot. `folders` is (folder name, fingerprint). Everything
+/// remembered before is dropped first, so only this lookup's answer counts,
+/// and a failed lookup leaves none; returns how many matched. Nothing asked,
+/// no request.
+pub async fn match_fingerprints(
+    net: &crate::net::Net,
+    addons: &std::path::Path,
+    folders: &[(String, u32)],
+) -> anyhow::Result<usize> {
+    remember_matches(addons, HashMap::new());
     if folders.is_empty() {
         return Ok(0);
     }
@@ -540,15 +574,11 @@ pub async fn match_fingerprints(net: &crate::net::Net, folders: &[(String, u32)]
     if let Some(e) = api_error(resp.status().as_u16()) {
         return Err(e);
     }
-    let r: Data<FpResult> = resp.error_for_status()?.json().await?;
+    // Read with the same size limit as every other reply (AUDIT N1).
+    let r: Data<FpResult> = crate::net::json(resp.error_for_status()?).await?;
     let found = matches_from(r.data, folders);
     let n = found.len();
-    if let Ok(mut map) = folder_matches().lock() {
-        for (folder, _) in folders {
-            map.remove(&folder.to_ascii_lowercase());
-        }
-        map.extend(found);
-    }
+    remember_matches(addons, found);
     Ok(n)
 }
 
@@ -726,6 +756,25 @@ pub async fn resolve(net: &crate::net::Net, id: u64, prerelease: bool) -> anyhow
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn remembered_matches_belong_to_one_game_folder_and_the_last_lookup_only() {
+        let first = std::path::Path::new(r"C:\Games\WoW\_forever_\Interface\AddOns");
+        let other = std::path::Path::new(r"D:\Other\_forever_\Interface\AddOns");
+        let m = |file: &str| FolderMatch { mod_id: 5, file_name: file.into() };
+        remember_matches(first, HashMap::from([("node".to_string(), m("Node-1.0")), ("bags".to_string(), m("Bags-3"))]));
+        assert_eq!(folder_match(first, "Node"), Some(m("Node-1.0")));
+        // The same path in another case is the same folder on Windows.
+        assert_eq!(folder_match(std::path::Path::new(r"c:\games\wow\_FOREVER_\Interface\AddOns"), "node"), Some(m("Node-1.0")));
+        // Another install's same-named folder is not this one.
+        assert_eq!(folder_match(other, "Node"), None);
+        // The next lookup replaces the answer: a folder it did not ask about keeps nothing.
+        remember_matches(first, HashMap::from([("node".to_string(), m("Node-1.1"))]));
+        assert_eq!(folder_match(first, "Node"), Some(m("Node-1.1")));
+        assert_eq!(folder_match(first, "Bags"), None);
+        remember_matches(other, HashMap::new());
+        assert_eq!(folder_match(first, "Node"), None, "switching installs forgets the first one");
+    }
 
     #[test]
     fn fingerprint_matches_need_the_folder_name_and_its_own_fingerprint() {

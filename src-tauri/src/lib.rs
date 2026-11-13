@@ -1125,33 +1125,55 @@ async fn current_install(app: &App) -> Result<String, String> {
 
 async fn scan_packages(app: &App) -> Result<Vec<Package>, String> {
     let install = current_install(app).await?;
+    let addons = addons_dir(&install);
     let cat = catalog_cached(app).await;
     let folders = tokio::task::spawn_blocking(move || wow::scan_addons(Path::new(&install)))
         .await
         .map_err(err)?;
     let mut folders = folders;
-    apply_fingerprint_matches(&mut folders);
+    apply_fingerprint_matches(&addons, &mut folders);
     let st = app.state.lock().await.clone();
     let mut pkgs = build_packages(&st, &cat, &folders);
     for p in &mut pkgs {
         if let Some(Source::Curse(id)) = p.source {
-            p.installed_curse_file = p.folders.iter()
-                .filter_map(|f| sources::curseforge::folder_match(f))
-                .find(|m| m.mod_id == id)
-                .map(|m| m.file_name);
+            p.installed_curse_file =
+                release_from_matches(&p.folders, id, |f| sources::curseforge::folder_match(&addons, f));
         }
     }
     Ok(pkgs)
 }
 
+/// The CurseForge release a package's fingerprints say is installed: only when
+/// every one of its folders matched the same file of project `id`. A module
+/// that did not change between releases can match the newest file while the
+/// main folder is older, so one matching folder says nothing about the rest;
+/// with anything less there is no answer and the version check goes by the
+/// TOC as before. Never hides an update.
+fn release_from_matches(
+    folders: &[String],
+    id: u64,
+    lookup: impl Fn(&str) -> Option<sources::curseforge::FolderMatch>,
+) -> Option<String> {
+    let mut release: Option<String> = None;
+    for folder in folders {
+        let m = lookup(folder).filter(|m| m.mod_id == id)?;
+        match &release {
+            None => release = Some(m.file_name),
+            Some(r) if *r == m.file_name => {}
+            Some(_) => return None,
+        }
+    }
+    release
+}
+
 /// Folders with no CurseForge id of their own get the one their fingerprint
 /// matched (issue #8: addons installed by the CurseForge app rarely carry
 /// `X-Curse-Project-ID`). Memory only; see `refresh_fingerprints`.
-fn apply_fingerprint_matches(folders: &mut [AddonFolder]) {
+fn apply_fingerprint_matches(addons: &Path, folders: &mut [AddonFolder]) {
     if !sources::curseforge::available() {
         return;
     }
-    apply_matches(folders, sources::curseforge::folder_match);
+    apply_matches(folders, |f| sources::curseforge::folder_match(addons, f));
 }
 
 fn apply_matches(folders: &mut [AddonFolder], lookup: impl Fn(&str) -> Option<sources::curseforge::FolderMatch>) {
@@ -1173,6 +1195,7 @@ async fn refresh_fingerprints(app: &App) {
     let cat = catalog_cached(app).await;
     let st = app.state.lock().await.clone();
     let dir = addons_dir(&install);
+    let addons = dir.clone();
     let wanted = tokio::task::spawn_blocking(move || {
         let folders = wow::scan_addons(Path::new(&install));
         let pkgs = build_packages(&st, &cat, &folders);
@@ -1191,10 +1214,10 @@ async fn refresh_fingerprints(app: &App) {
     })
     .await
     .unwrap_or_default();
-    if wanted.is_empty() {
-        return;
-    }
-    match sources::curseforge::match_fingerprints(&app.net, &wanted).await {
+    // Called even with nothing to ask: it drops the previous answer, so no
+    // folder keeps a match this check did not confirm.
+    match sources::curseforge::match_fingerprints(&app.net, &addons, &wanted).await {
+        Ok(_) if wanted.is_empty() => {}
         Ok(n) => logi!("curseforge: fingerprints matched {n} of {} unknown folders", wanted.len()),
         Err(e) => loge!("curseforge fingerprints: {e}"),
     }
@@ -2418,14 +2441,15 @@ pub fn cli(args: &[String]) -> i32 {
                 // Diagnostics: every folder's CurseForge fingerprint and match.
                 let install = current_install(&app).await?;
                 let dir = addons_dir(&install);
+                let addons = dir.clone();
                 let all = tokio::task::spawn_blocking(move || {
                     wow::scan_addons(Path::new(&install)).into_iter()
                         .filter_map(|f| fingerprint::folder_fingerprint(&dir.join(&f.folder)).map(|fp| (f.folder, fp)))
                         .collect::<Vec<_>>()
                 }).await.map_err(err)?;
-                let n = sources::curseforge::match_fingerprints(&app.net, &all).await.map_err(err)?;
+                let n = sources::curseforge::match_fingerprints(&app.net, &addons, &all).await.map_err(err)?;
                 let rows: Vec<_> = all.iter().map(|(f, fp)| {
-                    let m = sources::curseforge::folder_match(f);
+                    let m = sources::curseforge::folder_match(&addons, f);
                     serde_json::json!({ "folder": f, "fingerprint": fp,
                         "mod_id": m.as_ref().map(|m| m.mod_id), "file": m.map(|m| m.file_name) })
                 }).collect();
@@ -2722,6 +2746,24 @@ pub fn note_replace(old: std::path::PathBuf, marker: Option<std::path::PathBuf>)
 #[cfg(test)]
 mod tests {
     use sources::curseforge::FolderMatch;
+
+    #[test]
+    fn a_fingerprint_release_needs_every_folder_of_the_package_to_agree() {
+        let folders = vec!["Node".to_string(), "Node_Data".to_string()];
+        let m = |mod_id, file: &str| Some(FolderMatch { mod_id, file_name: file.into() });
+        // Both folders from the same file: that file is what is installed.
+        assert_eq!(release_from_matches(&folders, 7, |_| m(7, "Node-2.0")), Some("Node-2.0".into()));
+        // An unchanged data module matches the new release while the main folder is
+        // the old one: no answer, so the version check is not fooled into "current".
+        assert_eq!(
+            release_from_matches(&folders, 7, |f| m(7, if f == "Node" { "Node-1.9" } else { "Node-2.0" })),
+            None
+        );
+        // One folder unmatched, or matched to another project: no answer either.
+        assert_eq!(release_from_matches(&folders, 7, |f| if f == "Node" { m(7, "Node-2.0") } else { None }), None);
+        assert_eq!(release_from_matches(&folders, 7, |f| m(if f == "Node" { 7 } else { 8 }, "Node-2.0")), None);
+        assert_eq!(release_from_matches(&[], 7, |_| m(7, "Node-2.0")), None);
+    }
 
     #[test]
     fn a_curseforge_questiedb_is_its_own_package_and_questie_follows_it() {
