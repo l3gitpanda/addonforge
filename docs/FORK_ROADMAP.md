@@ -259,7 +259,9 @@ add or replace and asks before installing.
 5. ~~CI: `cargo audit`, `cargo deny`, clippy, secret scanning.~~ Done on
    branch `ci-hardening`. When a weekly run fails on a new advisory: update the
    crate if a fix exists (`cargo update -p <crate>`), otherwise add a named
-   `ignore` entry with the reason to `src-tauri/deny.toml`.
+   `ignore` entry with the reason to `src-tauri/deny.toml`. When the secret
+   scan flags something that is not a secret, add its fingerprint (gitleaks
+   prints it) with the reason to `.gitleaksignore`; never loosen the rules.
 6. ~~Download integrity (AUDIT O2).~~ Done on branch `download-integrity`.
 7. ~~Remove the unused `wago_key` from `state.json`.~~ Done, same branch.
 8. Phase Two: the provider trait in `sources/` (search, metadata, resolve,

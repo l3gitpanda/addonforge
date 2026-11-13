@@ -159,7 +159,8 @@ mod recovery_tests {
     #[test]
     fn an_old_wago_key_loads_and_is_left_out_of_the_next_save() {
         let dir = scratch("wago-key");
-        let old = r#"{"install_path":"C:\\Games\\_forever_","wago_key":"wago-secret-123","allow_prerelease":true,
+        // A placeholder, not key-shaped: a secret scanner has nothing to flag.
+        let old = r#"{"install_path":"C:\\Games\\_forever_","wago_key":"old","allow_prerelease":true,
             "installed":{"cat:x":{"source":"github","source_id":"a/b","version":"1","folders":["X"],"installed_at":1}}}"#;
         fs::write(dir.join("state.json"), old).unwrap();
         let st = AppState::load_from(&dir);

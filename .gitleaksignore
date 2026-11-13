@@ -1,0 +1,7 @@
+# Findings gitleaks reports that are known not to be secrets. One line each:
+# <commit>:<file>:<rule>:<line>, so only that exact finding is excused and the
+# scan stays as strict everywhere else. Say why above each line.
+
+# A made-up value ("wago-secret-123") in a test of dropping the old Wago key
+# from settings files; replaced by a plain placeholder in the next commit.
+7ecd12212fb0f04a7959325fdea739f44e1c57ea:src-tauri/src/state.rs:generic-api-key:162
