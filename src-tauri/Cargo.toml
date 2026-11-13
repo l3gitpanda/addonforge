@@ -30,6 +30,9 @@ image-blp = "1"
 base64 = "0.22"
 ed25519-dalek = { version = "2", default-features = false, features = ["std"] }
 sha2 = "0.10"
+# Checking downloads against the SHA-1 (CurseForge) and MD5 (WoWInterface) their sources publish.
+sha1 = "0.10"
+md5 = { package = "md-5", version = "0.10" }
 keyring-core = "1"
 
 [profile.release]

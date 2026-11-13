@@ -8,7 +8,7 @@
 //! unauthenticated). With pre-releases allowed we must use the API to list
 //! releases (the `latest` redirect never points at a pre-release).
 
-use super::Remote;
+use super::{FileHash, Remote};
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
@@ -53,6 +53,15 @@ struct ApiRelease {
 struct ApiAsset {
     name: String,
     browser_download_url: String,
+    /// `sha256:<hex>`, on assets uploaded since GitHub began recording it.
+    #[serde(default)]
+    digest: Option<String>,
+}
+
+impl ApiAsset {
+    fn hash(&self) -> Option<FileHash> {
+        self.digest.as_deref().and_then(FileHash::from_github_digest)
+    }
 }
 
 fn is_forever(m: &Meta) -> bool {
@@ -87,6 +96,8 @@ fn pick_from_release_json(
         filename: pick.filename.clone(),
         forever: Some(is_forever_build),
         prerelease,
+        // release.json carries no hash; the release's asset list does (see callers).
+        hash: None,
     })
 }
 
@@ -135,6 +146,8 @@ async fn source_archive(net: &crate::net::Net, repo: &str, rel: &ApiRelease) -> 
         filename: format!("{name}-{tag}.zip"),
         forever: None,
         prerelease: rel.prerelease,
+        // Made by GitHub on request: no published hash.
+        hash: None,
     })
 }
 
@@ -157,8 +170,9 @@ async fn from_api_release(
                             .map(|a| a.browser_download_url.clone())
                             .unwrap_or_default()
                     };
-                    let r = pick_from_release_json(rj, url_for, rel.prerelease)?;
+                    let mut r = pick_from_release_json(rj, url_for, rel.prerelease)?;
                     if !r.download_url.is_empty() {
+                        r.hash = assets.iter().find(|a| a.name == r.filename).and_then(ApiAsset::hash);
                         return Ok(r);
                     }
                 }
@@ -183,6 +197,7 @@ async fn from_api_release(
         filename: pick.name.clone(),
         forever: None,
         prerelease: rel.prerelease,
+        hash: pick.hash(),
     })
 }
 
@@ -192,6 +207,26 @@ fn api_error(status: u16, repo: &str) -> Option<anyhow::Error> {
         403 | 429 => Some(anyhow::anyhow!("GitHub API rate limit hit; try again in an hour")),
         _ => None,
     }
+}
+
+/// The SHA-256 GitHub publishes for `filename` in `repo`'s latest release, for
+/// a download found through `releases/latest/download/` (the update check's
+/// route, which costs no API request and so carries no hash). One API request,
+/// made only when installing. `None` when the asset has no digest (uploaded
+/// before GitHub recorded them), is not in the latest release any more, or the
+/// API is rate limited or unreachable: the download then goes ahead as before.
+pub async fn latest_asset_hash(net: &crate::net::Net, repo: &str, filename: &str) -> Option<FileHash> {
+    let repo = repo.trim().trim_matches('/');
+    let resp = net
+        .get(crate::net::Purpose::GitHub, format!("https://api.github.com/repos/{repo}/releases/latest"))
+        .header("Accept", "application/vnd.github+json")
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?;
+    let rel: ApiRelease = crate::net::json(resp).await.ok()?;
+    rel.assets.iter().find(|a| a.name == filename).and_then(ApiAsset::hash)
 }
 
 pub async fn resolve(
@@ -265,6 +300,29 @@ mod tests {
             |name| format!("https://example.test/download/{name}"),
             prerelease,
         )
+    }
+
+    #[test]
+    fn a_release_asset_carries_githubs_sha256() {
+        let digest = "sha256:89f2ba623bb6d69194843ea26ab7eaffac368dc51f85ddf614c881c2b608f1b1";
+        let rel: ApiRelease = serde_json::from_value(json!({
+            "tag_name": "v1.0",
+            "assets": [
+                {"name": "Addon-v1.0.zip", "browser_download_url": "https://github.com/o/r/releases/download/v1.0/Addon-v1.0.zip", "digest": digest},
+                {"name": "Addon-v1.0-classic.zip", "browser_download_url": "https://github.com/o/r/releases/download/v1.0/Addon-v1.0-classic.zip", "digest": null}
+            ]
+        }))
+        .unwrap();
+        // No release.json among the assets, so no request is made: the gate allows no host here.
+        let net = crate::net::Net::for_tests(&[]);
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let remote = rt.block_on(from_api_release(&net, "o/r", rel, None)).unwrap();
+        assert_eq!(remote.filename, "Addon-v1.0.zip");
+        assert_eq!(remote.hash, FileHash::from_github_digest(digest));
+        assert!(net.snapshot().entries.is_empty());
+        // An asset from before GitHub recorded digests has none.
+        let old: ApiAsset = serde_json::from_value(json!({"name": "a.zip", "browser_download_url": "u"})).unwrap();
+        assert_eq!(old.hash(), None);
     }
 
     #[test]

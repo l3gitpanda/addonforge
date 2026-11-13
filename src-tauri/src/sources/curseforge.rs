@@ -19,7 +19,7 @@
 //! downloaded around (they stay link-only), and calls are kept to a minimum
 //! (one batch request per update check, one request per search).
 
-use super::Remote;
+use super::{FileHash, Remote};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock, RwLock};
@@ -224,6 +224,27 @@ pub struct FileInfo {
     pub download_url: Option<String>,
     #[serde(default)]
     pub sortable_game_versions: Vec<SortableVersion>,
+    /// What CurseForge publishes for the file: algo 1 = SHA-1, 2 = MD5.
+    #[serde(default)]
+    pub hashes: Vec<FileHashInfo>,
+}
+
+#[derive(Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct FileHashInfo {
+    #[serde(default)]
+    pub value: String,
+    #[serde(default)]
+    pub algo: u8,
+}
+
+/// The file's SHA-1 if CurseForge lists one, else its MD5.
+fn published_hash(f: &FileInfo) -> Option<FileHash> {
+    let of = |algo| f.hashes.iter().filter(|h| h.algo == algo).find_map(|h| match algo {
+        1 => FileHash::sha1(&h.value),
+        _ => FileHash::md5(&h.value),
+    });
+    of(1).or_else(|| of(2))
 }
 
 #[derive(Deserialize, Clone, Debug, Default)]
@@ -659,6 +680,7 @@ fn remote_from(f: &FileInfo) -> Option<Remote> {
         filename: if f.file_name.is_empty() { format!("curse-{}.zip", f.id) } else { f.file_name.clone() },
         forever: Some(true),
         prerelease: f.release_type != 1,
+        hash: published_hash(f),
     })
 }
 
@@ -912,7 +934,29 @@ mod tests {
             file_date: date.into(),
             download_url: url.map(String::from),
             sortable_game_versions: types.iter().map(|t| SortableVersion { game_version_type_id: Some(*t) }).collect(),
+            hashes: Vec::new(),
         }
+    }
+
+    #[test]
+    fn a_ready_file_carries_curseforges_sha1_or_else_its_md5() {
+        let sha1 = "da39a3ee5e6b4b0d3255bfef95601890afd80709";
+        let md5 = "d41d8cd98f00b204e9800998ecf8427e";
+        let with = |hashes: &[(&str, u8)]| {
+            let mut f = file(1, "A-1.0", 1, &[FOREVER_TYPE], Some("https://edge.forgecdn.net/files/1/1/A.zip"), "2026-01-01");
+            f.hashes = hashes.iter().map(|(v, a)| FileHashInfo { value: v.to_string(), algo: *a }).collect();
+            remote_from(&f).unwrap().hash
+        };
+        assert_eq!(with(&[(md5, 2), (sha1, 1)]), FileHash::sha1(sha1), "SHA-1 first");
+        assert_eq!(with(&[(md5, 2)]), FileHash::md5(md5));
+        assert_eq!(with(&[("not-a-hash", 1), (md5, 2)]), FileHash::md5(md5), "a malformed SHA-1 is skipped");
+        assert_eq!(with(&[]), None, "nothing published, nothing to compare");
+        // The field name and shape as CurseForge sends them.
+        let parsed: FileInfo = serde_json::from_str(&format!(
+            r#"{{"id":1,"hashes":[{{"value":"{sha1}","algo":1}},{{"value":"{md5}","algo":2}}]}}"#
+        ))
+        .unwrap();
+        assert_eq!(published_hash(&parsed), FileHash::sha1(sha1));
     }
 
     #[test]

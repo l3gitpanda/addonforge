@@ -93,13 +93,68 @@ pub struct Remote {
     pub forever: Option<bool>,
     /// True when this came from a pre-release / beta channel.
     pub prerelease: bool,
+    /// The hash the source publishes for this exact file, when it publishes
+    /// one; the download is checked against it (`install::download`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hash: Option<FileHash>,
+}
+
+/// A hash a source publishes for the file it serves. Lowercase hex.
+#[derive(Serialize, Clone, Debug, PartialEq, Eq)]
+#[serde(tag = "algo", content = "hex", rename_all = "lowercase")]
+pub enum FileHash {
+    /// GitHub release assets (`digest`).
+    Sha256(String),
+    /// CurseForge files (`hashes`, algo 1).
+    Sha1(String),
+    /// WoWInterface (`UIMD5`), and CurseForge files with no SHA-1 (algo 2).
+    Md5(String),
+}
+
+impl FileHash {
+    /// Hex of exactly the right length for its kind, or nothing: a value a
+    /// source sent in some other shape is not trusted to mean anything.
+    fn checked(hex: &str, len: usize) -> Option<String> {
+        let hex = hex.trim().to_ascii_lowercase();
+        (hex.len() == len && hex.bytes().all(|b| b.is_ascii_hexdigit())).then_some(hex)
+    }
+
+    pub fn sha256(hex: &str) -> Option<Self> {
+        Self::checked(hex, 64).map(Self::Sha256)
+    }
+
+    pub fn sha1(hex: &str) -> Option<Self> {
+        Self::checked(hex, 40).map(Self::Sha1)
+    }
+
+    pub fn md5(hex: &str) -> Option<Self> {
+        Self::checked(hex, 32).map(Self::Md5)
+    }
+
+    /// GitHub's asset `digest`: `sha256:<hex>`. Other algorithms are not used.
+    pub fn from_github_digest(digest: &str) -> Option<Self> {
+        digest.trim().strip_prefix("sha256:").and_then(Self::sha256)
+    }
+
+    pub fn label(&self) -> &'static str {
+        match self {
+            FileHash::Sha256(_) => "SHA-256",
+            FileHash::Sha1(_) => "SHA-1",
+            FileHash::Md5(_) => "MD5",
+        }
+    }
+
+    pub fn hex(&self) -> &str {
+        match self {
+            FileHash::Sha256(h) | FileHash::Sha1(h) | FileHash::Md5(h) => h,
+        }
+    }
 }
 
 /// Options that can influence resolution.
 #[derive(Default, Clone, Debug)]
 pub struct ResolveOpts<'a> {
     pub asset_hint: Option<&'a str>,
-    pub wago_key: Option<&'a str>,
     pub prerelease: bool,
 }
 
@@ -110,7 +165,8 @@ pub async fn resolve(
 ) -> anyhow::Result<Remote> {
     match src {
         Source::Github(repo) => github::resolve(net, repo, opts.asset_hint, opts.prerelease).await,
-        Source::Wago(id) => wago::resolve(net, id, opts.wago_key, opts.prerelease).await,
+        // Dormant: Wago's updater keys went Patreon-only, and no key is kept.
+        Source::Wago(id) => wago::resolve(net, id, None, opts.prerelease).await,
         Source::Wowi(id) => wowi::resolve(net, *id).await,
         Source::Tukui(slug) => tukui::resolve(net, slug).await,
         Source::Curse(id) => curseforge::resolve(net, *id, opts.prerelease).await,
@@ -182,6 +238,23 @@ mod tests {
         assert!(checked_source(Source::Wago("abc".into())).is_err());
         assert!(checked_source(Source::Wowi(1)).is_ok());
         assert!(checked_source(Source::Curse(1)).is_ok());
+    }
+
+    #[test]
+    fn published_hashes_are_taken_only_in_their_exact_shape() {
+        let sha256 = "89F2BA623BB6D69194843EA26AB7EAFFAC368DC51F85DDF614C881C2B608F1B1";
+        assert_eq!(FileHash::sha256(sha256).map(|h| h.hex().to_string()), Some(sha256.to_ascii_lowercase()));
+        assert_eq!(
+            FileHash::from_github_digest(&format!("sha256:{}", sha256.to_ascii_lowercase())),
+            FileHash::sha256(sha256)
+        );
+        assert_eq!(FileHash::from_github_digest("sha512:abcd"), None, "only SHA-256 digests");
+        assert_eq!(FileHash::from_github_digest(sha256), None, "the prefix is required");
+        assert_eq!(FileHash::md5("e085da4ee8a90d82355f9ca1e7f9969a").map(|h| h.label()), Some("MD5"));
+        assert_eq!(FileHash::sha1("da39a3ee5e6b4b0d3255bfef95601890afd80709").map(|h| h.label()), Some("SHA-1"));
+        for bad in ["", "abc", "e085da4ee8a90d82355f9ca1e7f9969", "z085da4ee8a90d82355f9ca1e7f9969a", "e085da4ee8a90d82355f9ca1e7f9969a0"] {
+            assert_eq!(FileHash::md5(bad), None, "{bad:?}");
+        }
     }
 
     #[test]

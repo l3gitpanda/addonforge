@@ -54,5 +54,6 @@ pub async fn resolve(
         filename: format!("wago-{id}-{safe}.zip"),
         forever,
         prerelease: channel != "stable",
+        hash: None,
     })
 }

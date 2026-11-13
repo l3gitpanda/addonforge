@@ -702,7 +702,6 @@ async fn resolve_into(app: &App, pkg: &mut Package, cat: &Catalog) {
     let (hint, vouched) = entry_hint(cat, pkg);
     let opts = ResolveOpts {
         asset_hint: hint.as_deref(),
-        wago_key: None,
         prerelease: st.allow_prerelease,
     };
     match sources::resolve(&app.net, &src, opts).await {
@@ -1260,7 +1259,6 @@ async fn install_from(
     let entry = entry_for_source(&cat, key, src);
     let opts = ResolveOpts {
         asset_hint,
-        wago_key: None,
         prerelease: st.allow_prerelease,
     };
     let remote = sources::resolve(&app.net, src, opts).await.map_err(|e| resolve_error(&e))?;
@@ -1282,7 +1280,22 @@ async fn install_from(
         Source::Curse(_) => (sources::curseforge::download_headers(&remote.download_url), true),
         _ => (Vec::new(), false),
     };
-    let zip = install::download(&app.net, src.purpose(), &remote.download_url, &tmp, &remote.filename, &auth)
+    // The hash the source published for this file. GitHub's update-check route
+    // (`releases/latest/download/`) carries none, so one API request asks for
+    // it now, when installing only. No hash published: HTTPS is the only check,
+    // as before.
+    let expected = match (&remote.hash, src) {
+        (Some(h), _) => Some(h.clone()),
+        (None, Source::Github(repo)) if remote.download_url.contains("/releases/latest/download/") => {
+            sources::github::latest_asset_hash(&app.net, repo, &remote.filename).await
+        }
+        _ => None,
+    };
+    match &expected {
+        Some(h) => logi!("install {key}: the download is checked against its published {}", h.label()),
+        None => logi!("install {key}: no published hash for this file"),
+    }
+    let zip = install::download(&app.net, src.purpose(), &remote.download_url, &tmp, &remote.filename, &auth, expected.as_ref())
         .await
         .map_err(|e| {
             let msg = if from_curse { sources::curseforge::download_error(&e) } else { e.to_string() };
@@ -2483,8 +2496,7 @@ pub fn cli(args: &[String]) -> i32 {
                                 s,
                                 ResolveOpts {
                                     asset_hint: e.asset_hint.as_deref(),
-                                    wago_key: None,
-                                    prerelease: st.allow_prerelease,
+                                                                prerelease: st.allow_prerelease,
                                 },
                             )
                             .await
@@ -2923,6 +2935,7 @@ mod tests {
             filename: "a.zip".into(),
             forever: Some(true),
             prerelease: false,
+            hash: None,
         };
         assert_eq!(curse_link_reason(&Pick::Ready(ready)), None);
         assert_eq!(curse_link_reason(&Pick::NeedsFile(7)), None);
@@ -2942,7 +2955,7 @@ mod tests {
         let json = value.to_string().to_ascii_lowercase();
         assert!(!json.contains("curse"), "{json}");
         let fields: Vec<&str> = json.split('"').filter(|part| part.contains("key")).collect();
-        assert_eq!(fields, ["wago_key"], "only the unused legacy Wago field mentions a key");
+        assert!(fields.is_empty(), "no field for a key of any kind: {fields:?}");
     }
 
     #[test]
@@ -3002,7 +3015,7 @@ mod tests {
         Remote {
             version: version.into(),
             download_url: "https://example.test/Atlas.zip".into(), filename: "Atlas.zip".into(),
-            forever: Some(true), prerelease: false,
+            forever: Some(true), prerelease: false, hash: None,
         }
     }
 

@@ -1,6 +1,6 @@
 //! WoWInterface (wowinterface.com) public JSON API. No key needed.
 
-use super::Remote;
+use super::{FileHash, Remote};
 use serde::Deserialize;
 
 #[derive(Deserialize, Debug)]
@@ -11,6 +11,9 @@ struct FileDetails {
     download: String,
     #[serde(default, rename = "UIFileName")]
     file_name: String,
+    /// MD5 of the zip `UIDownload` serves (checked against a real download).
+    #[serde(default, rename = "UIMD5")]
+    md5: String,
     #[serde(default, rename = "UICompatibility")]
     compat: Option<Vec<Compat>>,
 }
@@ -50,5 +53,6 @@ pub async fn resolve(net: &crate::net::Net, id: u64) -> anyhow::Result<Remote> {
         filename,
         forever,
         prerelease: false,
+        hash: FileHash::md5(&d.md5),
     })
 }

@@ -185,10 +185,52 @@ fn extract_with(archive: &mut zip::ZipArchive<fs::File>, dest: &Path, limits: &E
     Ok(())
 }
 
+/// The hash being taken of a download as it arrives, of the kind the source published.
+enum Running {
+    Sha256(sha2::Sha256),
+    Sha1(sha1::Sha1),
+    Md5(md5::Md5),
+}
+
+impl Running {
+    fn new(kind: &crate::sources::FileHash) -> Self {
+        use sha2::Digest as _;
+        match kind {
+            crate::sources::FileHash::Sha256(_) => Running::Sha256(sha2::Sha256::new()),
+            crate::sources::FileHash::Sha1(_) => Running::Sha1(sha1::Sha1::new()),
+            crate::sources::FileHash::Md5(_) => Running::Md5(md5::Md5::new()),
+        }
+    }
+
+    fn update(&mut self, bytes: &[u8]) {
+        use sha2::Digest as _;
+        match self {
+            Running::Sha256(h) => h.update(bytes),
+            Running::Sha1(h) => h.update(bytes),
+            Running::Md5(h) => h.update(bytes),
+        }
+    }
+
+    fn hex(self) -> String {
+        use sha2::Digest as _;
+        let bytes: Vec<u8> = match self {
+            Running::Sha256(h) => h.finalize().to_vec(),
+            Running::Sha1(h) => h.finalize().to_vec(),
+            Running::Md5(h) => h.finalize().to_vec(),
+        };
+        bytes.iter().map(|b| format!("{b:02x}")).collect()
+    }
+}
+
+/// What a download that failed its hash check says. The file is gone by then.
+pub const HASH_MISMATCH: &str = "HASH_MISMATCH";
+
 /// `headers` go with the request: a source that wants its API key on a
 /// download says so here, and every other download sends none. `purpose` is
 /// the source, so the network gate holds the download and every redirect to
-/// that source's hosts.
+/// that source's hosts. `expect` is the hash the source published for the
+/// file: the download is hashed as it arrives, and one that does not match is
+/// deleted and refused before anything is unpacked.
 pub async fn download(
     net: &crate::net::Net,
     purpose: crate::net::Purpose,
@@ -196,6 +238,7 @@ pub async fn download(
     dest_dir: &Path,
     filename: &str,
     headers: &[(&'static str, String)],
+    expect: Option<&crate::sources::FileHash>,
 ) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(dest_dir)?;
     let path = staged_path(dest_dir, filename);
@@ -219,15 +262,29 @@ pub async fn download(
         let mut file = fs::File::create(&path)?;
         let mut stream = resp.bytes_stream();
         let mut total: u64 = 0;
+        let mut running = expect.map(Running::new);
         while let Some(chunk) = stream.next().await {
             let chunk = chunk?;
             total += chunk.len() as u64;
             if total > MAX_DOWNLOAD {
                 anyhow::bail!("download exceeded 512 MB; refusing");
             }
+            if let Some(h) = running.as_mut() {
+                h.update(&chunk);
+            }
             file.write_all(&chunk)?;
         }
         file.flush()?;
+        if let (Some(want), Some(h)) = (expect, running) {
+            let got = h.hex();
+            if got != want.hex() {
+                anyhow::bail!(
+                    "{HASH_MISMATCH}: the downloaded file does not match the {} its source published for it (expected {}, got {got}), so it was deleted and nothing was installed",
+                    want.label(),
+                    want.hex()
+                );
+            }
+        }
         Ok(())
     }
     .await;
@@ -1191,10 +1248,69 @@ mod recovery_tests {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let url = serve_truncated();
         let net = crate::net::Net::for_tests(&["127.0.0.1"]);
-        let result = rt.block_on(download(&net, crate::net::Purpose::GitHub, &url, &staged, "Addon.zip", &[]));
+        let result = rt.block_on(download(&net, crate::net::Purpose::GitHub, &url, &staged, "Addon.zip", &[], None));
         assert!(result.is_err(), "a truncated body must fail");
         assert_eq!(fs::read_dir(&staged).unwrap().count(), 0, "the partial file must be removed");
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Serve the same whole reply to `times` requests in turn.
+    fn serve_body(body: &'static [u8], times: usize) -> String {
+        use std::io::{Read, Write};
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let addr = listener.local_addr().unwrap();
+        std::thread::spawn(move || {
+            for _ in 0..times {
+                let Ok((mut sock, _)) = listener.accept() else { return };
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf);
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                let _ = sock.write_all(head.as_bytes());
+                let _ = sock.write_all(body);
+            }
+        });
+        format!("http://{addr}/Addon.zip")
+    }
+
+    #[test]
+    fn a_download_is_checked_against_the_hash_its_source_published() {
+        use crate::sources::FileHash;
+        use sha2::Digest as _;
+        const BODY: &[u8] = b"PK\x03\x04 pretend this is an addon zip";
+        let hex = |bytes: &[u8]| bytes.iter().map(|b| format!("{b:02x}")).collect::<String>();
+        let right = [
+            FileHash::sha256(&hex(&sha2::Sha256::digest(BODY))).unwrap(),
+            FileHash::sha1(&hex(&sha1::Sha1::digest(BODY))).unwrap(),
+            FileHash::md5(&hex(&md5::Md5::digest(BODY))).unwrap(),
+        ];
+        let wrong = [
+            FileHash::sha256(&"0".repeat(64)).unwrap(),
+            FileHash::sha1(&"0".repeat(40)).unwrap(),
+            FileHash::md5(&"0".repeat(32)).unwrap(),
+        ];
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let net = crate::net::Net::for_tests(&["127.0.0.1"]);
+        let url = serve_body(BODY, right.len() + wrong.len());
+        for expect in &right {
+            let dir = scratch("hash-ok");
+            let staged = dir.join("downloads");
+            let zip = rt.block_on(download(&net, crate::net::Purpose::GitHub, &url, &staged, "Addon.zip", &[], Some(expect)));
+            let zip = zip.unwrap_or_else(|e| panic!("{}: {e}", expect.label()));
+            assert_eq!(fs::read(&zip).unwrap(), BODY);
+            let _ = fs::remove_dir_all(&dir);
+        }
+        for expect in &wrong {
+            let dir = scratch("hash-bad");
+            let staged = dir.join("downloads");
+            let err = rt
+                .block_on(download(&net, crate::net::Purpose::GitHub, &url, &staged, "Addon.zip", &[], Some(expect)))
+                .unwrap_err()
+                .to_string();
+            assert!(err.starts_with(HASH_MISMATCH), "{err}");
+            assert!(err.contains(expect.label()), "{err}");
+            assert_eq!(fs::read_dir(&staged).unwrap().count(), 0, "a file that failed its check is deleted");
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]
@@ -1206,7 +1322,7 @@ mod recovery_tests {
         net.set_policy(crate::net::Policy { offline: true, ..Default::default() });
         // Nothing listens on port 1; a request that went out would fail differently.
         let url = "http://127.0.0.1:1/Addon.zip";
-        let err = rt.block_on(download(&net, crate::net::Purpose::GitHub, url, &staged, "Addon.zip", &[])).unwrap_err();
+        let err = rt.block_on(download(&net, crate::net::Purpose::GitHub, url, &staged, "Addon.zip", &[], None)).unwrap_err();
         assert!(err.is::<crate::net::Refused>(), "{err:#}");
         assert!(err.to_string().starts_with("Offline mode is on"), "{err}");
         assert_eq!(fs::read_dir(&staged).unwrap().count(), 0);

@@ -27,11 +27,10 @@ pub struct AppState {
     /// Product folder we manage, e.g. `C:\...\World of Warcraft\_classic_beta_`.
     #[serde(default)]
     pub install_path: Option<String>,
-    /// A Wago Addons API key from before build 25. Unused now (Wago's updater
-    /// keys went Patreon-only and the source was dropped); kept so older
-    /// state files still load.
-    #[serde(default)]
-    pub wago_key: Option<String>,
+    // `wago_key` (a Wago Addons API key from before build 25) is gone: unused
+    // since Wago's updater keys went Patreon-only. An older file that still has
+    // one loads as before (unknown fields are ignored), and the next save
+    // leaves the key out, so it does not stay on disk in plain text.
     /// Packages we installed ourselves, keyed by package key.
     #[serde(default)]
     pub installed: HashMap<String, Installed>,
@@ -116,11 +115,14 @@ impl AppState {
         let tmp = dir.join("state.json.tmp");
         fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
         let final_path = dir.join("state.json");
-        let current_is_valid = fs::read(&final_path)
-            .map(|b| serde_json::from_slice::<AppState>(&b).is_ok())
-            .unwrap_or(false);
-        if current_is_valid {
-            let _ = fs::copy(&final_path, dir.join("state.json.bak"));
+        // The backup is the current file as this version reads it, written out
+        // again: a field this version no longer has (an old `wago_key`) does not
+        // live on in the backup either.
+        let current = fs::read(&final_path).ok().and_then(|b| serde_json::from_slice::<AppState>(&b).ok());
+        if let Some(previous) = current {
+            if let Ok(bytes) = serde_json::to_vec_pretty(&previous) {
+                let _ = fs::write(dir.join("state.json.bak"), bytes);
+            }
         }
         // Rust's rename replaces an existing file on Windows, so the state file is
         // never missing part-way through a save.
@@ -151,6 +153,25 @@ mod recovery_tests {
         AppState::default().save_to(&dir).unwrap();
         let backup: AppState = serde_json::from_slice(&fs::read(dir.join("state.json.bak")).unwrap()).unwrap();
         assert!(backup.allow_prerelease);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn an_old_wago_key_loads_and_is_left_out_of_the_next_save() {
+        let dir = scratch("wago-key");
+        // A placeholder, not key-shaped: a secret scanner has nothing to flag.
+        let old = r#"{"install_path":"C:\\Games\\_forever_","wago_key":"old","allow_prerelease":true,
+            "installed":{"cat:x":{"source":"github","source_id":"a/b","version":"1","folders":["X"],"installed_at":1}}}"#;
+        fs::write(dir.join("state.json"), old).unwrap();
+        let st = AppState::load_from(&dir);
+        assert_eq!(st.install_path.as_deref(), Some(r"C:\Games\_forever_"), "the rest of an old file still loads");
+        assert!(st.allow_prerelease && st.installed.contains_key("cat:x"));
+        st.save_to(&dir).unwrap();
+        for file in ["state.json", "state.json.bak"] {
+            let saved = fs::read_to_string(dir.join(file)).unwrap();
+            assert!(!saved.contains("wago"), "{file}: {saved}");
+            assert!(saved.contains("_forever_"), "{file} still holds the settings");
+        }
         let _ = fs::remove_dir_all(&dir);
     }
 
