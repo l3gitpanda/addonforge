@@ -130,7 +130,7 @@ pub fn local_icon(install: &Path, texture: &str) -> Option<String> {
 }
 
 /// Fetch an https image (GitHub avatar or a catalogue `icon` URL), cached for 30 days.
-pub async fn remote_icon(client: &reqwest::Client, url: &str) -> Option<String> {
+pub async fn remote_icon(net: &crate::net::Net, url: &str) -> Option<String> {
     // The catalogue is fetched live, so its `icon` field gets the same limit as README images.
     if !allowed_image_host(url) {
         return None;
@@ -144,8 +144,8 @@ pub async fn remote_icon(client: &reqwest::Client, url: &str) -> Option<String> 
             }
         }
     }
-    let resp = client
-        .get(url)
+    let resp = net
+        .get(crate::net::Purpose::Images, url)
         .timeout(Duration::from_secs(15))
         .send()
         .await
@@ -174,22 +174,12 @@ const PREVIEW_W: u32 = 720;
 const README_TTL: Duration = Duration::from_secs(24 * 3600);
 
 /// Hosts an image may come from for the preview. The app promises to talk
-/// only to the addon sites, so anything else in a README is ignored.
+/// only to the addon sites, so anything else in a README is ignored. The list
+/// is the network gate's (`net::Purpose::Images`), which holds every redirect
+/// to it as well.
 fn allowed_image_host(url: &str) -> bool {
     // A real URL parse: `https://evil.example?.wago.io/a.png` has the host evil.example.
-    let Ok(parsed) = reqwest::Url::parse(url) else { return false };
-    if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
-        return false;
-    }
-    let Some(host) = parsed.host_str() else { return false };
-    let host = host.to_ascii_lowercase();
-    host == "github.com"
-        || host.ends_with(".githubusercontent.com")
-        || host == "media.forgecdn.net"
-        || host == "addons.wago.io"
-        || host.ends_with(".wago.io")
-        || host == "www.wowinterface.com"
-        || host == "cdn-wow.mmoui.com"
+    crate::net::allowed_host(crate::net::Purpose::Images, url)
 }
 
 /// First image reference in a README: `![alt](url)` or `<img src="url">`.
@@ -371,9 +361,9 @@ struct CachedDetails {
 
 /// Latest release notes for a repo: (plain text, version). `Err` when the
 /// API call itself failed, `Ok(None)` when the release has no notes.
-async fn latest_release_notes(client: &reqwest::Client, repo: &str) -> Result<Option<(String, String)>, ()> {
-    let r = client
-        .get(format!("https://api.github.com/repos/{repo}/releases/latest"))
+async fn latest_release_notes(net: &crate::net::Net, repo: &str) -> Result<Option<(String, String)>, ()> {
+    let r = net
+        .get(crate::net::Purpose::Details, format!("https://api.github.com/repos/{repo}/releases/latest"))
         .header("Accept", "application/vnd.github+json")
         .timeout(Duration::from_secs(10))
         .send()
@@ -475,7 +465,7 @@ fn strip_inline(s: &str) -> String {
 }
 
 /// README summary and one preview image for a GitHub repo. Cached a day.
-pub async fn github_details(client: &reqwest::Client, repo: &str) -> Details {
+pub async fn github_details(net: &crate::net::Net, repo: &str) -> Details {
     let cache = cache_dir().join(format!("{}.json", key(&format!("readme2|{repo}"))));
     if let Ok(meta) = fs::metadata(&cache) {
         let fresh = meta.modified().ok().and_then(|m| m.elapsed().ok()).map(|age| age < README_TTL).unwrap_or(false);
@@ -483,7 +473,7 @@ pub async fn github_details(client: &reqwest::Client, repo: &str) -> Details {
             if let Some(mut d) = fs::read(&cache).ok().and_then(|b| serde_json::from_slice::<CachedDetails>(&b).ok()) {
                 if !d.changelog_checked {
                     // Earlier attempt failed (or predates this field): retry just the notes.
-                    if let Ok(notes) = latest_release_notes(client, repo).await {
+                    if let Ok(notes) = latest_release_notes(net, repo).await {
                         d.changelog_checked = true;
                         d.changelog = notes.as_ref().map(|n| n.0.clone());
                         d.changelog_version = notes.map(|n| n.1).filter(|t| !t.is_empty());
@@ -497,7 +487,7 @@ pub async fn github_details(client: &reqwest::Client, repo: &str) -> Details {
     let mut md = None;
     for name in ["README.md", "readme.md", "Readme.md", "README.MD", "README"] {
         let url = format!("https://raw.githubusercontent.com/{repo}/HEAD/{name}");
-        if let Ok(r) = client.get(&url).timeout(Duration::from_secs(10)).send().await {
+        if let Ok(r) = net.get(crate::net::Purpose::Details, &url).timeout(Duration::from_secs(10)).send().await {
             if r.status().is_success() {
                 if let Ok(t) = crate::net::text(r, crate::net::TEXT_LIMIT).await {
                     md = Some(t);
@@ -507,7 +497,7 @@ pub async fn github_details(client: &reqwest::Client, repo: &str) -> Details {
         }
     }
     // Latest release notes: one API call, cached with the rest for a day.
-    let notes = latest_release_notes(client, repo).await;
+    let notes = latest_release_notes(net, repo).await;
     let changelog_checked = notes.is_ok();
     let (changelog, changelog_version) = match notes {
         Ok(Some((b, t))) => (Some(b), Some(t).filter(|t| !t.is_empty())),
@@ -520,8 +510,8 @@ pub async fn github_details(client: &reqwest::Client, repo: &str) -> Details {
     // Picture: GitHub's rendered README first (its proxy serves the
     // author's off-site images from a GitHub host), raw markdown as fallback.
     let mut image_url = None;
-    if let Ok(r) = client
-        .get(format!("https://api.github.com/repos/{repo}/readme"))
+    if let Ok(r) = net
+        .get(crate::net::Purpose::Details, format!("https://api.github.com/repos/{repo}/readme"))
         .header("Accept", "application/vnd.github.html")
         .timeout(Duration::from_secs(10))
         .send()
@@ -537,7 +527,7 @@ pub async fn github_details(client: &reqwest::Client, repo: &str) -> Details {
         image_url = first_readme_image(&md, repo);
     }
     let image = match &image_url {
-        Some(u) => preview_image(client, u).await,
+        Some(u) => preview_image(net, u).await,
         None => None,
     };
     let _ = fs::create_dir_all(cache_dir());
@@ -556,14 +546,14 @@ fn preview_cached(url: &str) -> Option<String> {
 }
 
 /// Fetch and shrink a preview image (jpeg, <= 720px wide). 8 MB cap.
-pub async fn preview_image(client: &reqwest::Client, url: &str) -> Option<String> {
+pub async fn preview_image(net: &crate::net::Net, url: &str) -> Option<String> {
     if !allowed_image_host(url) {
         return None;
     }
     if let Some(d) = preview_cached(url) {
         return Some(d);
     }
-    let resp = client.get(url).timeout(Duration::from_secs(20)).send().await.ok()?.error_for_status().ok()?;
+    let resp = net.get(crate::net::Purpose::Images, url).timeout(Duration::from_secs(20)).send().await.ok()?.error_for_status().ok()?;
     let bytes = crate::net::read_capped(resp, 8 * 1024 * 1024).await.ok()?;
     let img = decode_remote(&bytes)?;
     let img = if img.width() > PREVIEW_W { img.resize(PREVIEW_W, PREVIEW_W * 4, FilterType::Triangle) } else { img };

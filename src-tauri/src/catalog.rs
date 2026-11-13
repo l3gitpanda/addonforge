@@ -129,10 +129,10 @@ pub const BUNDLED_STATS: &str = include_str!("../../catalog/stats.json");
 pub const STATS_URL: &str =
     "https://raw.githubusercontent.com/l3gitpanda/addonforge/main/catalog/stats.json";
 
-pub async fn load_stats(client: &reqwest::Client) -> Stats {
+pub async fn load_stats(net: &crate::net::Net) -> Stats {
     let r = async {
-        let resp = client
-            .get(STATS_URL)
+        let resp = net
+            .get(crate::net::Purpose::Stats, STATS_URL)
             .timeout(Duration::from_secs(6))
             .send()
             .await
@@ -168,16 +168,22 @@ fn verify_with(raw: &[u8], sig: &str, key: &[u8; 32]) -> anyhow::Result<Catalog>
 
 const CATALOG_LIMIT: usize = 4 * 1024 * 1024;
 
-async fn fetch_text(client: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
-    let r = client.get(url).timeout(Duration::from_secs(6)).send().await.ok()?.error_for_status().ok()?;
+async fn fetch_text(net: &crate::net::Net, url: &str) -> Option<Vec<u8>> {
+    let r = net.get(crate::net::Purpose::Catalogue, url).timeout(Duration::from_secs(6)).send().await.ok()?.error_for_status().ok()?;
     // The signed catalogue is about 55 KB; a reply far past that is not it.
     crate::net::read_capped(r, CATALOG_LIMIT).await.ok()
 }
 
 /// Latest catalogue: the signed remote copy if reachable within a few seconds, else bundled.
-pub async fn load(client: &reqwest::Client) -> (Catalog, &'static str) {
+/// With offline mode on or the refresh switched off, the built-in copy without asking.
+pub async fn load(net: &crate::net::Net) -> (Catalog, &'static str) {
+    match net.refusal(crate::net::Purpose::Catalogue) {
+        Some(crate::net::Reason::Offline) => return (bundled(), "bundled (offline)"),
+        Some(_) => return (bundled(), "bundled (refresh off)"),
+        None => {}
+    }
     let sig_url = format!("{REMOTE_URL}.sig");
-    let (raw, sig) = tokio::join!(fetch_text(client, REMOTE_URL), fetch_text(client, &sig_url));
+    let (raw, sig) = tokio::join!(fetch_text(net, REMOTE_URL), fetch_text(net, &sig_url));
     let remote = match (raw, sig) {
         (Some(raw), Some(sig)) => match verify_remote(&raw, &String::from_utf8_lossy(&sig)) {
             Ok(c) => Some(c),

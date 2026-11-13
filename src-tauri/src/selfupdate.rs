@@ -115,11 +115,11 @@ pub fn is_newer(latest: &Latest) -> bool {
     a > b || (cfg!(windows) && a == b && latest.build > build())
 }
 
-pub async fn check(client: &reqwest::Client, url_override: Option<&str>) -> SelfUpdate {
-    check_channel(client, UPDATE_CHANNEL, url_override).await
+pub async fn check(net: &crate::net::Net, url_override: Option<&str>) -> SelfUpdate {
+    check_channel(net, UPDATE_CHANNEL, url_override).await
 }
 
-async fn check_channel(client: &reqwest::Client, channel: Option<&str>, url_override: Option<&str>) -> SelfUpdate {
+async fn check_channel(net: &crate::net::Net, channel: Option<&str>, url_override: Option<&str>) -> SelfUpdate {
     let url = manifest_url(channel, url_override);
     let mut out = SelfUpdate {
         current_version: version().into(),
@@ -135,8 +135,8 @@ async fn check_channel(client: &reqwest::Client, channel: Option<&str>, url_over
     let url = url.as_str();
     // The manifest is trusted only with a valid signature from the release key.
     let res: anyhow::Result<Latest> = async {
-        let manifest = crate::net::read_capped(client.get(url).send().await?.error_for_status()?, 1024 * 1024).await?;
-        let sig_resp = client.get(format!("{url}.sig")).send().await?.error_for_status()?;
+        let manifest = crate::net::read_capped(net.get(crate::net::Purpose::AppUpdate, url).send().await?.error_for_status()?, 1024 * 1024).await?;
+        let sig_resp = net.get(crate::net::Purpose::AppUpdate, format!("{url}.sig")).send().await?.error_for_status()?;
         let sig = String::from_utf8(crate::net::read_capped(sig_resp, 4096).await?)?;
         let key = crate::signing::verified_key()?;
         crate::signing::verify_manifest(&manifest, &sig, &key)?;
@@ -172,7 +172,7 @@ fn is_portable(exe: &Path) -> bool {
 /// its exact path, so Start-menu shortcuts and the uninstaller keep working;
 /// the new process deletes the `.old` file.
 #[cfg(windows)]
-pub async fn apply(client: &reqwest::Client, latest: &Latest) -> anyhow::Result<PathBuf> {
+pub async fn apply(net: &crate::net::Net, latest: &Latest) -> anyhow::Result<PathBuf> {
     // Checked here as well as in `check`: whatever a caller hands over, a build
     // with no update channel never replaces its own exe.
     if !enabled() {
@@ -195,7 +195,7 @@ pub async fn apply(client: &reqwest::Client, latest: &Latest) -> anyhow::Result<
         anyhow::bail!("update has the same filename as the running exe");
     }
     let tmp = dir.join(format!("{name}.part"));
-    let bytes = crate::net::read_capped(client.get(&latest.url).send().await?.error_for_status()?, 200 * 1024 * 1024).await?;
+    let bytes = crate::net::read_capped(net.get(crate::net::Purpose::AppUpdate, &latest.url).send().await?.error_for_status()?, 200 * 1024 * 1024).await?;
     if bytes.len() < 1_000_000 {
         anyhow::bail!("downloaded file is too small to be AddonForge ({} bytes)", bytes.len());
     }
@@ -459,17 +459,19 @@ mod channel_tests {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         // Nothing listens on port 1 of this machine. Had the check sent a
         // request it would come back as an error; it must not send one.
-        let client = reqwest::Client::new();
-        let r = rt.block_on(check_channel(&client, None, Some("http://127.0.0.1:1/latest.json")));
+        let net = crate::net::Net::for_tests(&["127.0.0.1"]);
+        let r = rt.block_on(check_channel(&net, None, Some("http://127.0.0.1:1/latest.json")));
         assert!(!r.enabled);
         assert!(!r.available);
         assert!(r.latest.is_none());
         assert_eq!(r.error, None, "a request was made");
+        assert!(net.snapshot().entries.is_empty(), "the network gate saw a request");
         // The same address with a channel present is asked, and fails: the test above is not vacuous.
-        let asked = rt.block_on(check_channel(&client, Some("http://127.0.0.1:1/latest.json"), None));
+        let asked = rt.block_on(check_channel(&net, Some("http://127.0.0.1:1/latest.json"), None));
         assert!(asked.enabled);
         assert!(asked.error.is_some());
         assert!(!asked.available);
+        assert_eq!(net.snapshot().entries.len(), 1, "the asked check went through the gate");
     }
 
     #[cfg(windows)]
@@ -488,7 +490,7 @@ mod channel_tests {
             sha256: "0".repeat(64),
             ..Default::default()
         };
-        let err = rt.block_on(apply(&reqwest::Client::new(), &latest)).unwrap_err().to_string();
+        let err = rt.block_on(apply(&crate::net::Net::for_tests(&["127.0.0.1"]), &latest)).unwrap_err().to_string();
         assert_eq!(err, OFF);
     }
 }

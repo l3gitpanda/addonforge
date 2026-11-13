@@ -180,9 +180,12 @@ fn extract_with(archive: &mut zip::ZipArchive<fs::File>, dest: &Path, limits: &E
 }
 
 /// `headers` go with the request: a source that wants its API key on a
-/// download says so here, and every other download sends none.
+/// download says so here, and every other download sends none. `purpose` is
+/// the source, so the network gate holds the download and every redirect to
+/// that source's hosts.
 pub async fn download(
-    client: &reqwest::Client,
+    net: &crate::net::Net,
+    purpose: crate::net::Purpose,
     url: &str,
     dest_dir: &Path,
     filename: &str,
@@ -190,14 +193,17 @@ pub async fn download(
 ) -> anyhow::Result<PathBuf> {
     fs::create_dir_all(dest_dir)?;
     let path = staged_path(dest_dir, filename);
-    let mut request = client.get(url);
+    let mut request = net.get(purpose, url);
     for (name, value) in headers {
-        request = request.header(*name, value);
+        request = request.header(name, value);
     }
-    let resp = request
-        .send()
-        .await
-        .with_context(|| format!("download failed: {url}"))?
+    let resp = match request.send().await {
+        Ok(resp) => resp,
+        // The gate's own words say what was stopped and why; nothing was sent.
+        Err(e) if e.is::<crate::net::Refused>() => return Err(e),
+        Err(e) => return Err(e.context(format!("download failed: {url}"))),
+    };
+    let resp = resp
         .error_for_status()
         .with_context(|| format!("download refused: {url}"))?;
     if resp.content_length().is_some_and(|n| n > MAX_DOWNLOAD) {
@@ -1139,9 +1145,26 @@ mod recovery_tests {
         let staged = dir.join("downloads");
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         let url = serve_truncated();
-        let result = rt.block_on(download(&reqwest::Client::new(), &url, &staged, "Addon.zip", &[]));
+        let net = crate::net::Net::for_tests(&["127.0.0.1"]);
+        let result = rt.block_on(download(&net, crate::net::Purpose::GitHub, &url, &staged, "Addon.zip", &[]));
         assert!(result.is_err(), "a truncated body must fail");
         assert_eq!(fs::read_dir(&staged).unwrap().count(), 0, "the partial file must be removed");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_download_the_gate_refuses_says_why_and_writes_nothing() {
+        let dir = scratch("refused");
+        let staged = dir.join("downloads");
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
+        let net = crate::net::Net::for_tests(&["127.0.0.1"]);
+        net.set_policy(crate::net::Policy { offline: true, ..Default::default() });
+        // Nothing listens on port 1; a request that went out would fail differently.
+        let url = "http://127.0.0.1:1/Addon.zip";
+        let err = rt.block_on(download(&net, crate::net::Purpose::GitHub, url, &staged, "Addon.zip", &[])).unwrap_err();
+        assert!(err.is::<crate::net::Refused>(), "{err:#}");
+        assert!(err.to_string().starts_with("Offline mode is on"), "{err}");
+        assert_eq!(fs::read_dir(&staged).unwrap().count(), 0);
         let _ = fs::remove_dir_all(&dir);
     }
 

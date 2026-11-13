@@ -112,13 +112,13 @@ fn pick_asset<'a>(zips: &'a [&'a ApiAsset], asset_hint: Option<&str>) -> &'a Api
 /// A release with no files at all: GitHub still serves the tagged source as a
 /// zip. That is only a usable addon when the author bundles nothing at
 /// packaging time, so a `.pkgmeta` with `externals` means "ask the author".
-async fn source_archive(client: &reqwest::Client, repo: &str, rel: &ApiRelease) -> anyhow::Result<Remote> {
+async fn source_archive(net: &crate::net::Net, repo: &str, rel: &ApiRelease) -> anyhow::Result<Remote> {
     let tag = rel.tag_name.trim();
     if tag.is_empty() {
         anyhow::bail!("release has no files and no tag");
     }
     let pkgmeta = format!("https://raw.githubusercontent.com/{repo}/{tag}/.pkgmeta");
-    if let Ok(resp) = client.get(&pkgmeta).send().await {
+    if let Ok(resp) = net.get(crate::net::Purpose::GitHub, &pkgmeta).send().await {
         if resp.status().is_success() {
             let text = crate::net::text(resp, crate::net::TEXT_LIMIT).await.unwrap_or_default();
             if text.lines().any(|l| l.trim_start().starts_with("externals")) {
@@ -139,14 +139,14 @@ async fn source_archive(client: &reqwest::Client, repo: &str, rel: &ApiRelease) 
 }
 
 async fn from_api_release(
-    client: &reqwest::Client,
+    net: &crate::net::Net,
     repo: &str,
     rel: ApiRelease,
     asset_hint: Option<&str>,
 ) -> anyhow::Result<Remote> {
     // Prefer the packager's release.json if this release has one.
     if let Some(rj_asset) = rel.assets.iter().find(|a| a.name == "release.json") {
-        if let Ok(resp) = client.get(&rj_asset.browser_download_url).send().await {
+        if let Ok(resp) = net.get(crate::net::Purpose::GitHub, &rj_asset.browser_download_url).send().await {
             if resp.status().is_success() {
                 if let Ok(rj) = crate::net::json::<ReleaseJson>(resp).await {
                     let assets = &rel.assets;
@@ -172,7 +172,7 @@ async fn from_api_release(
         .collect();
     if zips.is_empty() {
         if rel.assets.is_empty() {
-            return source_archive(client, repo, &rel).await;
+            return source_archive(net, repo, &rel).await;
         }
         anyhow::bail!("release {} has no zip asset", rel.tag_name);
     }
@@ -195,7 +195,7 @@ fn api_error(status: u16, repo: &str) -> Option<anyhow::Error> {
 }
 
 pub async fn resolve(
-    client: &reqwest::Client,
+    net: &crate::net::Net,
     repo: &str,
     asset_hint: Option<&str>,
     prerelease: bool,
@@ -205,8 +205,8 @@ pub async fn resolve(
     if prerelease {
         // Newest release including pre-releases (one API call).
         let api = format!("https://api.github.com/repos/{repo}/releases?per_page=5");
-        let resp = client
-            .get(&api)
+        let resp = net
+            .get(crate::net::Purpose::GitHub, &api)
             .header("Accept", "application/vnd.github+json")
             .send()
             .await?;
@@ -218,11 +218,11 @@ pub async fn resolve(
             .into_iter()
             .find(|r| !r.draft)
             .ok_or_else(|| anyhow::anyhow!("no GitHub release found for {repo}"))?;
-        return from_api_release(client, repo, rel, asset_hint).await;
+        return from_api_release(net, repo, rel, asset_hint).await;
     }
 
     let base = format!("https://github.com/{repo}/releases/latest/download/");
-    let resp = client.get(format!("{base}release.json")).send().await?;
+    let resp = net.get(crate::net::Purpose::GitHub, format!("{base}release.json")).send().await?;
     if resp.status().is_success() {
         let rj: ReleaseJson = crate::net::json(resp).await?;
         return pick_from_release_json(rj, |name| format!("{base}{name}"), false);
@@ -230,8 +230,8 @@ pub async fn resolve(
 
     // No release.json: ask the API for the latest release's assets.
     let api = format!("https://api.github.com/repos/{repo}/releases/latest");
-    let resp = client
-        .get(&api)
+    let resp = net
+        .get(crate::net::Purpose::GitHub, &api)
         .header("Accept", "application/vnd.github+json")
         .send()
         .await?;
@@ -239,7 +239,7 @@ pub async fn resolve(
         return Err(e);
     }
     let rel: ApiRelease = crate::net::json(resp.error_for_status()?).await?;
-    from_api_release(client, repo, rel, asset_hint).await
+    from_api_release(net, repo, rel, asset_hint).await
 }
 
 #[cfg(test)]
