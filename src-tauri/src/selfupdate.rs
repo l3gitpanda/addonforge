@@ -266,6 +266,8 @@ pub async fn apply(net: &crate::net::Net, latest: &Latest) -> anyhow::Result<Pat
 
 /// A failed move of the downloaded exe can leave the installed copy renamed
 /// aside. Retry putting it back and report the actual recovery outcome.
+// Used by the Windows updater (`apply`) and by tests on every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn restore_after_staging_failure(old: &Path, current: &Path, cause: std::io::Error) -> anyhow::Error {
     match retry_io(|| std::fs::rename(old, current)) {
         Ok(()) => anyhow::anyhow!("the update could not be installed ({cause}), so the previous version was restored"),
@@ -282,6 +284,8 @@ fn restore_after_staging_failure(old: &Path, current: &Path, cause: std::io::Err
 /// Put the previous copy back after a failed launch. Portable: the old file was
 /// never moved, so only the new file goes. Installed: the old exe was renamed
 /// aside, so it is renamed back over the new one.
+// Used by the Windows updater (`apply`) and by tests on every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub(crate) fn restore_previous(target: &Path, old: &Path, current: &Path, portable: bool) -> std::io::Result<()> {
     // Antivirus and Windows can hold a file open for a moment, so retry before giving up.
     retry_io(|| if target.exists() { std::fs::remove_file(target) } else { Ok(()) })?;
@@ -292,6 +296,8 @@ pub(crate) fn restore_previous(target: &Path, old: &Path, current: &Path, portab
 }
 
 /// Run an operation, retrying for a few seconds while a file is briefly locked.
+// Used by the Windows updater (`apply`) and by tests on every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
 fn retry_io(mut op: impl FnMut() -> std::io::Result<()>) -> std::io::Result<()> {
     let mut last = None;
     for _ in 0..10 {

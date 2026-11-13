@@ -143,8 +143,7 @@ mod recovery_tests {
     #[test]
     fn a_corrupt_settings_file_does_not_overwrite_the_good_backup() {
         let dir = scratch("keep-backup");
-        let mut good = AppState::default();
-        good.allow_prerelease = true;
+        let good = AppState { allow_prerelease: true, ..AppState::default() };
         good.save_to(&dir).unwrap();
         good.save_to(&dir).unwrap(); // the good copy is now also the backup
         fs::write(dir.join("state.json"), "{ not json").unwrap();
@@ -158,8 +157,7 @@ mod recovery_tests {
     #[test]
     fn load_falls_back_to_the_backup_when_the_main_file_is_corrupt() {
         let dir = scratch("fallback");
-        let mut good = AppState::default();
-        good.auto_update = true;
+        let good = AppState { auto_update: true, ..AppState::default() };
         good.save_to(&dir).unwrap();
         good.save_to(&dir).unwrap();
         fs::write(dir.join("state.json"), "broken").unwrap();

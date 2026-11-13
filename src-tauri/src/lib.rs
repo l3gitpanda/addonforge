@@ -520,7 +520,7 @@ fn build_packages(st: &AppState, cat: &Catalog, folders: &[AddonFolder]) -> Vec<
             note,
         });
     }
-    out.sort_by(|a, b| a.name.to_ascii_lowercase().cmp(&b.name.to_ascii_lowercase()));
+    out.sort_by_key(|a| a.name.to_ascii_lowercase());
     out
 }
 
@@ -998,7 +998,7 @@ async fn do_backup(app: &App) -> Result<BackupResult, String> {
     }
     let flavor = folder_name(&install).trim_matches('_').to_string();
     let stamp = chrono_stamp();
-    let dir = dirs::document_dir().unwrap_or_else(|| AppState::dir()).join("AddonForge backups");
+    let dir = dirs::document_dir().unwrap_or_else(AppState::dir).join("AddonForge backups");
     // Never overwrite an earlier backup from the same minute.
     let mut dest = dir.join(format!("WTF-{flavor}-{stamp}.zip"));
     let mut n = 2;
@@ -1033,7 +1033,7 @@ fn chrono_stamp() -> String {
 
 #[tauri::command]
 async fn open_backups_folder() -> Result<String, String> {
-    let dir = dirs::document_dir().unwrap_or_else(|| AppState::dir()).join("AddonForge backups");
+    let dir = dirs::document_dir().unwrap_or_else(AppState::dir).join("AddonForge backups");
     std::fs::create_dir_all(&dir).map_err(err)?;
     tauri_plugin_opener::open_path(&dir, None::<&str>).map_err(err)?;
     Ok(dir.to_string_lossy().to_string())
@@ -2719,11 +2719,13 @@ mod tests {
 
     #[test]
     fn chosen_source_respects_what_the_entry_offers() {
-        let mut e = CatalogEntry::default();
-        e.name = "Thing".into();
-        e.github = Some("a/b".into());
-        e.curse = Some(5);
-        e.wago = Some("w".into());
+        let mut e = CatalogEntry {
+            name: "Thing".into(),
+            github: Some("a/b".into()),
+            curse: Some(5),
+            wago: Some("w".into()),
+            ..Default::default()
+        };
         assert!(matches!(chosen_source(&e, "github"), Ok(Source::Github(r)) if r == "a/b"));
         assert!(chosen_source(&e, "wago").is_err(), "Wago is not a source any more");
         assert!(chosen_source(&e, "wowi").is_err(), "not listed");
@@ -3693,7 +3695,9 @@ mod local_zip_tests {
     #[test]
     fn a_malformed_zip_from_disk_is_refused_by_the_same_checks_as_a_download() {
         let toc: &[u8] = b"## Interface: 16001\n## Version: 1\n";
-        let cases: &[(&str, &[(&str, &[u8])], &str)] = &[
+        /// (case name, zip entries as (name, bytes), part of the expected error)
+        type Case<'a> = (&'a str, &'a [(&'a str, &'a [u8])], &'a str);
+        let cases: &[Case] = &[
             ("stream", &[("Foo/Foo.toc", toc), ("Foo/notes.lua:payload.exe", b"MZ")], "cannot store"),
             ("device", &[("Foo/Foo.toc", toc), ("Foo/CON", b"x")], "cannot store"),
             ("escape", &[("Foo/Foo.toc", toc), ("../escape.lua", b"x")], "unsafe path"),

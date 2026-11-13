@@ -97,6 +97,18 @@ Based on AddonForge v0.4.0 (build 31 source, commit `7bdd46b`).
 
 From the Phase One audit; details and the open items in `docs/AUDIT.md`.
 
+- **`zip` 2.4 replaced by 9.5.** Four advisories against 2.4
+  (RUSTSEC-2026-0367, -0368, -0369, -0429) concern `ZipArchive::extract`,
+  symlink targets and Unix permissions. AddonForge never calls `extract` (it
+  writes each entry itself, symlink entries as plain files, with no
+  permissions), so none reached it; the vulnerable code is gone all the same.
+  `tokio` moved past an unsoundness fix (RUSTSEC-2026-0386, Unix only) and a
+  yanked crate was replaced.
+- **CI checks the dependency tree and the history.** `cargo deny` (RustSec
+  advisories, licences, crates.io only, no wildcard versions) and a gitleaks
+  scan of every commit run on each pull request, on main and weekly; clippy
+  runs with warnings as errors on Windows and macOS. Tools and actions are
+  pinned by version and checksum or commit.
 - **Redirects are held to each site's own hosts** (AUDIT O1). Every request
   names what it is for, and may only reach that purpose's hosts, on the first
   request and on every redirect: a GitHub download may move between GitHub's

@@ -31,10 +31,14 @@ pub fn verify_manifest(manifest: &[u8], sig_b64: &str, key: &[u8; 32]) -> Result
     key.verify(manifest, &sig).map_err(|_| anyhow!("update signature does not match"))
 }
 
+// Used by the Windows updater (`apply`) and by tests on every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
+// Used by the Windows updater (`apply`) and by tests on every platform.
+#[cfg_attr(not(windows), allow(dead_code))]
 pub fn check_sha256(bytes: &[u8], expected: &str) -> Result<()> {
     if expected.is_empty() {
         bail!("update has no checksum, refusing to install it");

@@ -191,7 +191,7 @@ fn first_readme_image(md: &str, repo: &str) -> Option<String> {
         let start = i + p;
         if let Some(close) = md[start..].find("](") {
             let after = start + close + 2;
-            let end = md[after..].find(|c: char| c == ')' || c == ' ' || c == '\n').map(|e| after + e).unwrap_or(md.len());
+            let end = md[after..].find([')', ' ', '\n']).map(|e| after + e).unwrap_or(md.len());
             candidates.push((start, md[after..end].trim().to_string()));
         }
         i = start + 2;
@@ -421,7 +421,7 @@ pub fn release_notes(md: &str) -> String {
                 end -= 1;
             }
             out.truncate(end);
-            out.push_str("\u{2026}");
+            out.push('\u{2026}');
             break;
         }
     }

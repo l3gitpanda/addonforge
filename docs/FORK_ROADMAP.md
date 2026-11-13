@@ -51,7 +51,15 @@ Last updated: 13 November 2026.
   the first request and on every redirect hop (closes AUDIT O1). Settings has a
   Network section with the switches and an in-memory activity list; there is
   `--cli network`. After it: `cargo test` 157 passed, 2 ignored; UI checks
-  pass; security check OK.
+  pass; security check OK. Merged as PR #7.
+- Seventh change, branch `ci-hardening`: **CI hardening**. Clippy runs with
+  warnings as errors on Windows and macOS; a new workflow (`checks.yml`) runs
+  `cargo deny` (RustSec advisories, licences, bans, sources; policy in
+  `src-tauri/deny.toml`) and a gitleaks scan of the whole history, on every PR,
+  on main, and weekly. Its first run moved `zip` 2.4 to 9.5 (four advisories,
+  none reachable from AddonForge's code) and `tokio` past an unsoundness fix.
+  After it: `cargo test` 158 passed, 2 ignored; `cargo deny check` ok; clippy
+  clean on Windows; gitleaks: no leaks in 149 commits.
 
 ## Do first: the fork still behaves as the original
 
@@ -88,7 +96,7 @@ Read closely by the fork:
 | Images and READMEs | `icons.rs` | Host list sound on the first URL; redirects not held to it (O1). Decoding now limited (N2). |
 | Network reads | `net.rs` (new), every call site | Every reply body is now read with a size limit (N1). |
 | Webview | `tauri.conf.json`, `capabilities/default.json`, `scripts/security-check.mjs` | CSP `default-src 'self'`, no inline script, capabilities limited to core, opener, dialog. A CI gate fails the build if these weaken. |
-| CI | `.github/workflows/build.yml` | Security check, `cargo test`, UI checks on Windows and macOS. No dependency audit, licence check, secret scan or clippy. |
+| CI | `.github/workflows/build.yml`, `checks.yml` | Security check, clippy (`-D warnings`), `cargo test --locked`, UI checks on Windows and macOS. `cargo deny` and a gitleaks history scan on Linux, on every PR and push to main and weekly. Third-party code in CI is pinned: actions by commit, cargo-deny and gitleaks by version and SHA-256. |
 
 Not audited yet (upstream; status unknown): `wow.rs` and
 `wow/detection.rs`, `log.rs`, `sources/github.rs` asset selection, `wowi.rs`,
@@ -140,13 +148,13 @@ Settings, Network, or all of it with offline mode.
 | Credential migration from old settings | Not started | `wago_key` in `state.json` is unused: remove it, without breaking old files. |
 | Diagnostics redaction | Implemented (upstream) + key never included | Home folder and usernames replaced. Not audited further. |
 | Provider disclosures | In progress | CurseForge done in Settings and the README. |
-| Zip traversal, bombs, limits, symlinks, junctions, Unicode and case collisions, temp files, races, rollback, deletion limits | **Tested** (audited, hardened) | Malformed-archive tests for alternate data streams, device names, trailing dots, bombs, entry counts, symlink entries, empty and duplicate target names, case collisions, partial downloads. Not tested: absolute and drive-letter entry names (rely on the `zip` crate). Open items O3, O4, O6 in AUDIT.md. |
+| Zip traversal, bombs, limits, symlinks, junctions, Unicode and case collisions, temp files, races, rollback, deletion limits | **Tested** (audited, hardened) | Malformed-archive tests for alternate data streams, device names, trailing dots, bombs, entry counts, symlink entries, empty and duplicate target names, case collisions, partial downloads. Absolute, drive-letter, UNC and `..` entry names tested since the move to `zip` 9 (`absolute_drive_and_network_entry_names_never_leave_the_folder`). Open items O3, O4, O6 in AUDIT.md. |
 | Update verification | Audited, dormant | Sound (AUDIT "Checked and sound"). Open: no freeze protection (O9). Decide with the fork's update channel. |
 | Download integrity against provider hashes | Not started | CurseForge and GitHub publish hashes that are not compared (AUDIT O2). |
 | Redirect validation | **Tested** for every purpose | Each purpose's hosts on every hop (AUDIT O1, fixed), on top of HTTPS-only, a hop limit, and the CurseForge key kept on CurseForge's hosts. |
 | External URL handling, CSP, webview boundary | Implemented (upstream), CI-gated | Not audited beyond the config. |
 | Provider metadata validation | Not audited | |
-| CI: `cargo audit`, licence policy, secret scan, clippy, malformed-archive tests | Not started | |
+| CI: `cargo audit`, licence policy, secret scan, clippy, malformed-archive tests | **Tested** | `cargo deny` covers the RustSec database (what `cargo audit` reads) as well as licences, bans and sources; six unmaintained-only crates under Tauri and `image-blp` are named exceptions in `deny.toml`. Malformed-archive tests run in `cargo test`. Verified locally (cargo-deny 0.20.2, gitleaks 8.30.1); the workflows' first run on GitHub is the PR's. Clippy on macOS is unverified until then. |
 | SBOM, reproducible builds, provenance | Not started | Investigate. |
 
 ## Phase Two: unified sources (P1)
@@ -184,6 +192,8 @@ detected and shown as unsupported.
 node scripts/security-check.mjs          # webview and CSP gate
 node scripts/test-ui.js                  # UI behaviour, no Tauri needed
 cd src-tauri && cargo test               # Rust unit tests; nothing leaves this machine, no real WoW folder, no key
+cargo clippy --all-targets -- -D warnings # as CI runs it
+cargo deny check                         # advisories, licences, bans, sources (needs cargo-deny: `cargo binstall cargo-deny`)
 cargo test -- --ignored real_credential_store   # writes and removes one test entry in the OS credential store
 ```
 
@@ -217,7 +227,10 @@ launch still uses the CurseForge key in the credential store, if there is one.
    startup switches, per-site switches, hosts on every redirect hop (O1),
    remote images (O8), activity list. Left from that item: update-check
    frequency, byte counts in the activity list.
-5. CI: `cargo audit`, `cargo deny`, clippy, secret scanning.
+5. ~~CI: `cargo audit`, `cargo deny`, clippy, secret scanning.~~ Done on
+   branch `ci-hardening`. When a weekly run fails on a new advisory: update the
+   crate if a fix exists (`cargo update -p <crate>`), otherwise add a named
+   `ignore` entry with the reason to `src-tauri/deny.toml`.
 6. Download integrity: compare CurseForge's file hashes and GitHub's asset
    `digest` with what was downloaded (AUDIT O2). Fits with the provider trait
    (Phase Two), which `net::Purpose` and `Source::purpose` now prepare.

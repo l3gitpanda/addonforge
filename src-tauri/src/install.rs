@@ -152,11 +152,17 @@ fn extract_with(archive: &mut zip::ZipArchive<fs::File>, dest: &Path, limits: &E
     let mut total: u64 = 0;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
+        // Names Windows would store differently are named as such, before the zip
+        // crate's own path check (which refuses some of them as merely "unsafe").
+        let name = entry.name().map_err(|_| anyhow!("archive has a file name that is not valid text"))?.into_owned();
+        if name.split(['/', '\\']).any(|part| !matches!(part, "" | "." | "..") && unsafe_name(part)) {
+            anyhow::bail!("archive has a file name Windows cannot store as written: {name}");
+        }
         let rel = entry.enclosed_name().ok_or_else(|| anyhow!("unsafe path in archive"))?;
         for part in rel.components() {
             if let std::path::Component::Normal(part) = part {
                 if unsafe_name(&part.to_string_lossy()) {
-                    anyhow::bail!("archive has a file name Windows cannot store as written: {}", entry.name());
+                    anyhow::bail!("archive has a file name Windows cannot store as written: {}", rel.display());
                 }
             }
         }
@@ -985,6 +991,45 @@ mod recovery_tests {
         let opts = zip::write::SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated);
         w.start_file(name, opts).unwrap();
         std::io::Write::write_all(w, body).unwrap();
+    }
+
+    #[test]
+    fn absolute_drive_and_network_entry_names_never_leave_the_folder() {
+        // A name no other test or file on this machine uses.
+        let leaf = format!("af-escape-{}.lua", unique());
+        let names = [
+            format!("/{leaf}"),
+            format!("\\{leaf}"),
+            format!("C:/{leaf}"),
+            format!("C:\\{leaf}"),
+            format!("C:{leaf}"),
+            format!("\\\\server\\share\\{leaf}"),
+            format!("//server/share/{leaf}"),
+            format!("Foo/../../{leaf}"),
+            format!("Foo\\..\\..\\{leaf}"),
+        ];
+        for name in &names {
+            let dir = scratch("abs-names");
+            let mut archive = raw_zip(&dir, |w| {
+                file(w, "Foo/Foo.toc", b"## Interface: 16001\n");
+                file(w, name, b"x");
+            });
+            let out = dir.join("out");
+            match extract_limited(&mut archive, &out) {
+                Err(e) => {
+                    let err = e.to_string();
+                    assert!(err.contains("unsafe path") || err.contains("cannot store"), "{name:?}: {err}");
+                }
+                // The zip crate reads a leading `/` as relative: such a file lands
+                // inside the folder, which is all this test asks.
+                Ok(()) => assert!(out.join(&leaf).is_file(), "{name:?} was accepted but not placed inside the folder"),
+            }
+            // Outside the extraction folder: beside it, and the roots a name could point at.
+            for place in [dir.join(&leaf), PathBuf::from(format!("C:\\{leaf}")), PathBuf::from(format!("\\{leaf}"))] {
+                assert!(!place.exists(), "{name:?} reached {}", place.display());
+            }
+            let _ = fs::remove_dir_all(&dir);
+        }
     }
 
     #[test]

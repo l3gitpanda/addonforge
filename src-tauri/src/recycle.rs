@@ -230,7 +230,7 @@ mod tests {
         fs::write(addon.join("HealBot.toc"), "## Version: 1
 ").unwrap();
         fs::write(addon.join("sub").join("settings.lua"), "user config").unwrap();
-        to_trash(&[addon.clone()]).unwrap();
+        to_trash(std::slice::from_ref(&addon)).unwrap();
         assert!(!addon.exists(), "the folder should have left the disk");
         assert!(root.exists(), "only the folder asked for moves");
         let _ = fs::remove_dir_all(&root);
