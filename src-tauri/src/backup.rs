@@ -107,7 +107,7 @@ mod tests {
         let s = zip_dir(&src, &dest).unwrap();
         assert_eq!(s.files, 2);
         let mut archive = zip::ZipArchive::new(fs::File::open(&dest).unwrap()).unwrap();
-        let names: Vec<String> = (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().to_string()).collect();
+        let names: Vec<String> = (0..archive.len()).map(|i| archive.by_index(i).unwrap().name().unwrap().to_string()).collect();
         assert!(names.contains(&"Config.wtf".to_string()));
         assert!(names.contains(&"Account/ME/SavedVariables/Questie.lua".to_string()));
         assert!(!names.iter().any(|n| n.contains("secret")), "junction contents must not be archived: {names:?}");
