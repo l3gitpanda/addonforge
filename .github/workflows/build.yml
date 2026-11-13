@@ -17,6 +17,8 @@ permissions:
 jobs:
   test:
     strategy:
+      # One platform failing still lets the other finish, so both results show.
+      fail-fast: false
       matrix:
         os: [windows-latest, macos-latest]
     runs-on: ${{ matrix.os }}
