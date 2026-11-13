@@ -47,7 +47,7 @@ So the fork adds a **user-supplied key**:
 
 | Host | When | Why |
 |---|---|---|
-| `api.curseforge.com` | Search, update check, resolving a file | The API. Header `x-api-key`. |
+| `api.curseforge.com` | Search, update check, resolving a file, fingerprint matching (`POST /v1/fingerprints/1`, merged from upstream) | The API. Header `x-api-key`. |
 | `edge.forgecdn.net`, then the `forgecdn.net` host it redirects to (seen: `mediafilez.forgecdn.net`) | Downloading a file from a CurseForge project | CurseForge announced on 10 June 2026 that CDN downloads need the key from 16 July 2026, sent as `x-api-key`. |
 
 Nowhere else. Two rules in code enforce it, inside the network gate

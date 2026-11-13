@@ -52,6 +52,15 @@ Last updated: 13 November 2026.
   Network section with the switches and an in-memory activity list; there is
   `--cli network`. After it: `cargo test` 157 passed, 2 ignored; UI checks
   pass; security check OK. Merged as PR #7.
+- Eighth change, branch `upstream-sync`: **upstream merged through
+  `73fdbd5`** (13 November 2026). Taken: CurseForge fingerprint matching
+  (`fingerprint.rs`), QuestieDB as its own CurseForge project, 12 catalogue
+  entries and download totals (catalogue byte-identical to upstream, so the
+  signature verifies). Left out: upstream's own "install a downloaded ZIP"
+  (`2f79b0a`), which duplicates the fork's zip install and clashed with it
+  (same command name); its preview-before-install idea is noted below. The
+  fingerprint request goes through the gate as CurseForge. After it:
+  `cargo test` 164 passed, 2 ignored.
 - Seventh change, branch `ci-hardening`: **CI hardening**. Clippy runs with
   warnings as errors on Windows and macOS; a new workflow (`checks.yml`) runs
   `cargo deny` (RustSec advisories, licences, bans, sources; policy in
@@ -211,6 +220,20 @@ Installs can be tried without the real game folder: make
 run `--cli use <dir>\_forever_` once. That throwaway profile then manages only
 the throwaway folder, for the CLI and the window alike. The update check at
 launch still uses the CurseForge key in the credential store, if there is one.
+
+## Syncing with upstream
+
+`git fetch upstream`, then `git log --oneline main..upstream/main` lists what
+is new. Merge (not cherry-pick) on a branch, so git records what was taken
+and the next sync starts after it. Keep the fork's side for its identity,
+self-update, network gate and zip install; take `catalog/forever.json` and
+its `.sig` byte for byte (the fork verifies them with upstream's key); route
+any new request through `net::Net` with a `Purpose`, and run clippy, since
+upstream's code is not linted with `-D warnings`.
+
+Last synced: `73fdbd5`, 13 November 2026. Not taken: `2f79b0a` (upstream's
+zip install). Worth borrowing from it later: it shows the folders a zip will
+add or replace and asks before installing.
 
 ## Next, in order
 

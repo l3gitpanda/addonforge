@@ -4,9 +4,26 @@ Changes made in this build, newest first.
 
 ## Unreleased
 
-Based on AddonForge v0.4.0 (build 31 source, commit `7bdd46b`).
+Based on AddonForge v0.4.0 (build 31 source, commit `7bdd46b`), with
+upstream's later changes merged through `73fdbd5` (13 November 2026).
 
 ### Added
+
+- **From upstream: addons installed by the CurseForge app are recognised.**
+  A folder with no catalogue entry, no id in its TOC and no source is matched
+  by its CurseForge fingerprint (a hash of the files the addon loads), all
+  unknown folders in one request per update check. A match gives it the
+  project's id, so it groups with its modules and updates from CurseForge, or
+  stays link only when the author opted out. In the fork this request goes
+  through the network gate: nothing is hashed or sent offline or with
+  CurseForge switched off. `addonforge --cli fingerprints` lists each folder's
+  result.
+- **From upstream: QuestieDB from CurseForge is checked as itself**, and
+  Questie then updates from CurseForge too, so the GitHub bundle never
+  overwrites a separate QuestieDB.
+- **From upstream: 12 catalogue entries** (140 in all) and fresh download
+  totals. The catalogue is upstream's byte for byte, so its signature still
+  verifies.
 
 - **Network settings and offline mode** (Settings, Network). Every request
   the app makes now goes through one gate in the core, which decides before
