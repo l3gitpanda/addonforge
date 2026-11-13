@@ -114,6 +114,17 @@ upstream's later changes merged through `73fdbd5` (13 November 2026).
 
 From the Phase One audit; details and the open items in `docs/AUDIT.md`.
 
+- **Downloads are checked against the hash their source publishes** (AUDIT
+  O2): CurseForge's SHA-1, GitHub's SHA-256, WoWInterface's MD5. The file is
+  hashed as it arrives; one that does not match is deleted before anything is
+  unpacked, and the install stops with a message saying so. A GitHub release
+  found through the update check's route costs one more API request at
+  install time, to fetch the hash. Tukui publishes no hash, and neither do
+  GitHub source archives, so those are checked by HTTPS alone, as before.
+- **The unused Wago key is gone from the settings file.** An older
+  `state.json` with one still loads; the next save leaves it out of the file
+  and of its backup.
+
 - **`zip` 2.4 replaced by 9.5.** Four advisories against 2.4
   (RUSTSEC-2026-0367, -0368, -0369, -0429) concern `ZipArchive::extract`,
   symlink targets and Unix permissions. AddonForge never calls `extract` (it
@@ -155,6 +166,8 @@ From the Phase One audit; details and the open items in `docs/AUDIT.md`.
 
 - Added `keyring-core` 1, with `windows-native-keyring-store` 1 on Windows and
   `apple-native-keyring-store` 1 on macOS (MIT or Apache-2.0).
+- Added `sha1` 0.10 and `md-5` 0.10 (RustCrypto, MIT or Apache-2.0), beside
+  the `sha2` already used, for the download hash check.
 
 ### Not verified
 

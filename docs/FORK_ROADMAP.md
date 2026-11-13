@@ -52,6 +52,12 @@ Last updated: 13 November 2026.
   Network section with the switches and an in-memory activity list; there is
   `--cli network`. After it: `cargo test` 157 passed, 2 ignored; UI checks
   pass; security check OK. Merged as PR #7.
+- Ninth change, branch `download-integrity`: **downloads are checked against
+  the hash their source publishes** (AUDIT O2): CurseForge SHA-1, GitHub
+  SHA-256, WoWInterface MD5; a mismatch is deleted and refused. And the
+  unused `wago_key` is gone from `state.json`: old files still load, and the
+  next save drops it from the file and its backup. After it: `cargo test` 171
+  passed, 2 ignored.
 - Eighth change, branch `upstream-sync`: **upstream merged through
   `73fdbd5`** (13 November 2026). Taken: CurseForge fingerprint matching
   (`fingerprint.rs`), QuestieDB as its own CurseForge project, 12 catalogue
@@ -154,12 +160,12 @@ Settings, Network, or all of it with offline mode.
 | Optional remote images | **Tested** | One switch for avatars, catalogue icons and README pictures (AUDIT O8). Cached images still show; nothing is fetched. |
 | Response size limits | **Tested** | `net.rs`; every reply body capped (AUDIT N1), remote image decoding limited (N2). |
 | Credentials in the OS store | **Tested** for the CurseForge key | Unit test on an in-memory store; a round trip through the real Windows Credential Manager (`cargo test -- --ignored real_credential_store`). macOS Keychain path compiles on paper only: not built or run. |
-| Credential migration from old settings | Not started | `wago_key` in `state.json` is unused: remove it, without breaking old files. |
+| Credential migration from old settings | **Tested** | `wago_key` removed from `AppState`. An old file with one loads as before; the next save leaves it out of `state.json` and of `state.json.bak` (the backup is now written from the parsed settings, not copied). Test: `an_old_wago_key_loads_and_is_left_out_of_the_next_save`. |
 | Diagnostics redaction | Implemented (upstream) + key never included | Home folder and usernames replaced. Not audited further. |
 | Provider disclosures | In progress | CurseForge done in Settings and the README. |
 | Zip traversal, bombs, limits, symlinks, junctions, Unicode and case collisions, temp files, races, rollback, deletion limits | **Tested** (audited, hardened) | Malformed-archive tests for alternate data streams, device names, trailing dots, bombs, entry counts, symlink entries, empty and duplicate target names, case collisions, partial downloads. Absolute, drive-letter, UNC and `..` entry names tested since the move to `zip` 9 (`absolute_drive_and_network_entry_names_never_leave_the_folder`). Open items O3, O4, O6 in AUDIT.md. |
 | Update verification | Audited, dormant | Sound (AUDIT "Checked and sound"). Open: no freeze protection (O9). Decide with the fork's update channel. |
-| Download integrity against provider hashes | Not started | CurseForge and GitHub publish hashes that are not compared (AUDIT O2). |
+| Download integrity against provider hashes | **Tested** | `install::download` hashes as it streams; `Remote::hash` carries what the source published (`sources::FileHash`). Verified where published (see AUDIT O2); a missing hash is not an error, a wrong one is. |
 | Redirect validation | **Tested** for every purpose | Each purpose's hosts on every hop (AUDIT O1, fixed), on top of HTTPS-only, a hop limit, and the CurseForge key kept on CurseForge's hosts. |
 | External URL handling, CSP, webview boundary | Implemented (upstream), CI-gated | Not audited beyond the config. |
 | Provider metadata validation | Not audited | |
@@ -254,7 +260,11 @@ add or replace and asks before installing.
    branch `ci-hardening`. When a weekly run fails on a new advisory: update the
    crate if a fix exists (`cargo update -p <crate>`), otherwise add a named
    `ignore` entry with the reason to `src-tauri/deny.toml`.
-6. Download integrity: compare CurseForge's file hashes and GitHub's asset
-   `digest` with what was downloaded (AUDIT O2). Fits with the provider trait
-   (Phase Two), which `net::Purpose` and `Source::purpose` now prepare.
-7. Remove the unused `wago_key` from `state.json` without breaking old files.
+6. ~~Download integrity (AUDIT O2).~~ Done on branch `download-integrity`.
+7. ~~Remove the unused `wago_key` from `state.json`.~~ Done, same branch.
+8. Phase Two: the provider trait in `sources/` (search, metadata, resolve,
+   download headers, published hash, limits), replacing the `match` per
+   operation; then GitLab, Codeberg or HTTPS-archive sources on top of it.
+9. Left over, small: update-check frequency; byte counts in the network
+   activity list; a preview of the folders a zip will add or replace (from
+   upstream's `2f79b0a`).

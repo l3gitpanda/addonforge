@@ -5,10 +5,10 @@ Status labels: Not started, In progress, Implemented, Tested, Blocked, Deferred.
 
 | Provider | Code | Status | Access |
 |---|---|---|---|
-| GitHub releases | `src-tauri/src/sources/github.rs` | Implemented (upstream; not re-audited by the fork yet) | Public, no key. 60 API requests an hour without a token when pre-releases are on. |
+| GitHub releases | `src-tauri/src/sources/github.rs` | Implemented (upstream; not re-audited by the fork yet) | Public, no key. 60 API requests an hour without a token: used when pre-releases are on, and once per install for the file's SHA-256 `digest`. |
 | CurseForge | `src-tauri/src/sources/curseforge.rs` | **Tested live** with the owner's key, 13 November 2026 (see below) | API key required. The user's own, or one built in. |
-| WoWInterface | `src-tauri/src/sources/wowi.rs` | Implemented (upstream; not re-audited) | Public JSON API, no key. |
-| TukUI | `src-tauri/src/sources/tukui.rs` | Implemented (upstream; not re-audited) | Public, no key. |
+| WoWInterface | `src-tauri/src/sources/wowi.rs` | Implemented (upstream; not re-audited) | Public JSON API, no key. Publishes the zip's MD5 (`UIMD5`), checked on download. |
+| TukUI | `src-tauri/src/sources/tukui.rs` | Implemented (upstream; not re-audited) | Public, no key. Publishes no hash, so its downloads are checked by HTTPS only. |
 | Wago | `src-tauri/src/sources/wago.rs` | Link only | Upstream dropped it in build 25: Wago's updater keys are for its Patreon supporters. Not re-investigated by the fork yet. |
 | Local zip file | `install.rs` (`stage_local`, `place_planned`), `lib.rs` (`install_local`) | Tested (see [below](#local-zip-file)) | A file the user downloaded themselves. No network. |
 | GitLab, Codeberg, any HTTPS archive | none | Not started | |

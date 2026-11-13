@@ -400,6 +400,8 @@ $("installed-list").addEventListener("click", async (e) => {
 function explainError(err) {
   const s = String(err);
   if (s.startsWith("SAFETY:")) return s.replace("SAFETY: refused, ", "Refused for safety: ");
+  // The download did not match the hash its source published: deleted before anything was unpacked.
+  if (s.startsWith("HASH_MISMATCH: ")) return "Refused: " + s.slice("HASH_MISMATCH: ".length) + ". Try again later; if it keeps happening, the file on the server is not the one its source lists.";
   const conflict = s.match(/^cannot replace addon folder (.+?): it belongs to [^\r\n]+$/);
   if (conflict) return `The ${conflict[1]} folder is treated as a separate addon, so AddonForge left it in place.`;
   return s;

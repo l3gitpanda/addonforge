@@ -30,5 +30,7 @@ pub async fn resolve(net: &crate::net::Net, slug: &str) -> anyhow::Result<Remote
         filename: format!("{slug}-{}.zip", a.version),
         forever,
         prerelease: false,
+        // Tukui's API publishes no hash.
+        hash: None,
     })
 }

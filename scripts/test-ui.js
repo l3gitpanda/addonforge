@@ -741,6 +741,11 @@ assert.ok(parseFloat(menu.style.right) >= 12, 'Options stay inside the right edg
   run(`renderActivity({ entries: [], counts: [] })`);
   assert.equal(element('net-activity-sum').textContent, 'Nothing sent or refused yet.');
 
+  // A download that failed its published-hash check is explained, not shown as a code.
+  const mismatch = run(`explainError('HASH_MISMATCH: the downloaded file does not match the SHA-1 its source published for it (expected aa, got bb), so it was deleted and nothing was installed')`);
+  assert.match(mismatch, /^Refused: the downloaded file does not match the SHA-1/);
+  assert.doesNotMatch(mismatch, /HASH_MISMATCH/);
+
   run('clearTimeout(toastTimer); clearTimeout(curse.timer)');
   console.log('UI checks passed: counts, eligible updates, failure priority and retry, filters, search, escaping, empty states, modal focus and cancellation, sort direction and remote pagination, saved preferences, backups and folder actions, CurseForge-only rows, reversible removal, the CurseForge API key, self-update being off without a channel, installing from a zip by dialog or drop, and the network settings, launch check and activity list.');
 })().catch((error) => { console.error(error); process.exitCode = 1; });
