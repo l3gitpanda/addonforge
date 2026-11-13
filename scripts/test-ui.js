@@ -660,6 +660,87 @@ assert.ok(parseFloat(menu.style.right) >= 12, 'Options stay inside the right edg
   // An opted-out CurseForge row points at the same route.
   assert.match(run(`LINK_ONLY.author.tip`), /download the zip there yourself, then use Install from zip in My addons/);
 
+  // Network settings. The switches show what the core saved, a change sends the
+  // whole set, and a failed save puts the boxes back.
+  const allOn = { offline: false, catalogue: true, stats: true, launch_check: true, images: true, curseforge: true, github: true, wowinterface: true, tukui: true };
+  let badgeShown = null;
+  element('offline-badge').classList = { add() {}, remove() {}, toggle: (cls, on) => { if (cls === 'hidden') badgeShown = !on; } };
+  invokeReply = () => Promise.resolve({ version: '0.4.0', build: 0, network: { ...allOn, github: false }, catalog_count: 128, catalog_source: 'bundled (offline)', catalog_updated: '' });
+  await run('loadSettings()');
+  assert.equal(element('net-github').checked, false);
+  assert.equal(element('net-curseforge').checked, true);
+  assert.equal(element('net-offline').checked, false);
+  assert.equal(badgeShown, false, 'No offline badge while online');
+  assert.match(element('catalog-info').textContent, /built-in copy \(offline mode\)/);
+  const netCalls = () => invokeCalls.filter((c) => c.command === 'set_network').map((c) => c.args.network);
+  invokeReply = (command, args) => command === 'set_network' ? Promise.resolve(args.network)
+    : command === 'network_activity' ? Promise.resolve({ policy: args, entries: [], counts: [] }) : Promise.resolve([]);
+  element('net-offline').checked = true;
+  await element('net-offline').onchange();
+  assert.deepEqual(JSON.parse(JSON.stringify(netCalls().at(-1))), { ...allOn, github: false, offline: true }, 'The whole set is sent, the GitHub switch included');
+  assert.equal(run('settings.network.offline'), true);
+  assert.equal(badgeShown, true, 'The header says the app is offline');
+  assert.match(element('toast').textContent, /^Offline mode is on/);
+  assert.equal(invokeCalls.at(-1).command, 'network_activity', 'The activity list refreshes after a change');
+  assert.equal(element('net-offline').disabled, false);
+  // A save the core refuses changes nothing.
+  element('net-tukui').checked = false;
+  invokeReply = (command) => command === 'set_network' ? Promise.reject('settings file is locked') : Promise.resolve({ entries: [], counts: [] });
+  await element('net-tukui').onchange();
+  assert.equal(element('net-tukui').checked, true, 'A failed save restores the box');
+  assert.equal(run('settings.network.tukui'), true);
+  assert.match(element('toast').textContent, /settings file is locked/);
+  assert.match(element('toast').className, /bad/);
+  // Back online with the catalogue on: the core dropped its copy, so the catalogue reloads.
+  invokeReply = (command, args) => command === 'set_network' ? Promise.resolve(args.network) : Promise.resolve(command === 'network_activity' ? { entries: [], counts: [] } : []);
+  const beforeOnline = invokeCalls.length;
+  element('net-offline').checked = false;
+  await element('net-offline').onchange();
+  assert.ok(invokeCalls.slice(beforeOnline).some((c) => c.command === 'catalog_list'), 'Leaving offline mode fetches the catalogue again');
+  assert.equal(element('toast').textContent, 'Offline mode is off.');
+
+  // The launch check: switched off or offline it asks nothing and says so.
+  const checksBefore = () => invokeCalls.filter((c) => c.command === 'check_updates').length;
+  let checks = checksBefore();
+  run(`settings.network = { ...settings.network, launch_check: false }`);
+  assert.equal(await run('launchCheck()'), false);
+  assert.equal(checksBefore(), checks, 'No check when it is switched off');
+  assert.match(element('last-checked').textContent, /Not checked at launch/);
+  run(`settings.network = { ...settings.network, launch_check: true, offline: true }`);
+  assert.equal(await run('launchCheck()'), false);
+  assert.equal(checksBefore(), checks, 'No check in offline mode');
+  assert.equal(element('last-checked').textContent, 'Offline mode: not checked');
+  run(`settings.network = { ...settings.network, offline: false }`);
+  invokeReply = (command) => Promise.resolve(command === 'check_updates' ? [] : []);
+  assert.equal(await run('launchCheck()'), true);
+  assert.equal(JSON.stringify(invokeCalls.filter((c) => c.command === 'check_updates').at(-1).args), '{"atLaunch":true}');
+  await run('checkUpdates()');
+  assert.equal(JSON.stringify(invokeCalls.at(-1).args), '{"atLaunch":false}', 'Asked for by hand, the check is not the launch check');
+  // The Check button's click event never reaches the core as `atLaunch`.
+  await element('btn-check').onclick({ type: 'click', target: element('btn-check') });
+  assert.equal(invokeCalls.at(-1).command, 'check_updates');
+  assert.equal(JSON.stringify(invokeCalls.at(-1).args), '{"atLaunch":false}', 'A click is a check by hand');
+  await run(`checkUpdates({ type: 'click' })`);
+  assert.equal(JSON.stringify(invokeCalls.at(-1).args), '{"atLaunch":false}', 'Anything but true is not the launch check');
+  run(`settings.network = { ...settings.network, offline: true }`);
+  await run('checkUpdates()');
+  assert.equal(element('toast').textContent, 'Offline mode is on, so nothing was checked.');
+  run(`settings.network = { ...settings.network, offline: false }`);
+
+  // The activity list: escaped, newest first as the core sends it, refusals marked.
+  run(`renderActivity({ entries: [
+      { at: 0, purpose: 'images', host: 'evil.example', path: '/<img src=x>', outcome: 'refused', detail: 'host not allowed' },
+      { at: 0, purpose: 'github', host: 'github.com', path: '/o/r/releases/latest/download/release.json', outcome: '302', detail: 'redirected to release-assets.githubusercontent.com' }
+    ], counts: [{ purpose: 'github', sent: 2, refused: 0 }, { purpose: 'images', sent: 0, refused: 1 }] })`);
+  const activity = element('net-activity-list').innerHTML;
+  assert.match(activity, /\/&lt;img src=x&gt;/);
+  assert.doesNotMatch(activity, /<img/);
+  assert.match(activity, /net-row refused/);
+  assert.ok(activity.indexOf('evil.example') < activity.indexOf('github.com'));
+  assert.equal(element('net-activity-sum').textContent, '2 sent, 1 refused: GitHub 2 · Images 0 (1 refused)');
+  run(`renderActivity({ entries: [], counts: [] })`);
+  assert.equal(element('net-activity-sum').textContent, 'Nothing sent or refused yet.');
+
   run('clearTimeout(toastTimer); clearTimeout(curse.timer)');
-  console.log('UI checks passed: counts, eligible updates, failure priority and retry, filters, search, escaping, empty states, modal focus and cancellation, sort direction and remote pagination, saved preferences, backups and folder actions, CurseForge-only rows, reversible removal, the CurseForge API key, self-update being off without a channel, and installing from a zip by dialog or drop.');
+  console.log('UI checks passed: counts, eligible updates, failure priority and retry, filters, search, escaping, empty states, modal focus and cancellation, sort direction and remote pagination, saved preferences, backups and folder actions, CurseForge-only rows, reversible removal, the CurseForge API key, self-update being off without a channel, installing from a zip by dialog or drop, and the network settings, launch check and activity list.');
 })().catch((error) => { console.error(error); process.exitCode = 1; });

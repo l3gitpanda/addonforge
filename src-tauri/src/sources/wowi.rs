@@ -21,9 +21,9 @@ struct Compat {
     version: String,
 }
 
-pub async fn resolve(client: &reqwest::Client, id: u64) -> anyhow::Result<Remote> {
+pub async fn resolve(net: &crate::net::Net, id: u64) -> anyhow::Result<Remote> {
     let url = format!("https://api.mmoui.com/v3/game/WOW/filedetails/{id}.json");
-    let resp = client.get(&url).send().await?;
+    let resp = net.get(crate::net::Purpose::WoWInterface, &url).send().await?;
     if resp.status().as_u16() == 404 {
         anyhow::bail!("WoWInterface has no addon with id {id}");
     }

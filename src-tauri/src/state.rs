@@ -58,6 +58,10 @@ pub struct AppState {
     /// folder, so the hint is not shown again for that path.
     #[serde(default)]
     pub dismissed_live_hint: Option<String>,
+    /// Offline mode and the network switches (see `net::Policy`). Missing in
+    /// older files, which then keep every switch on.
+    #[serde(default)]
+    pub network: crate::net::Policy,
 }
 
 pub fn now_secs() -> u64 {

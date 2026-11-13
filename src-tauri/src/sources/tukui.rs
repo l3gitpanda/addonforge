@@ -13,9 +13,9 @@ struct TukAddon {
     patch: Vec<String>,
 }
 
-pub async fn resolve(client: &reqwest::Client, slug: &str) -> anyhow::Result<Remote> {
+pub async fn resolve(net: &crate::net::Net, slug: &str) -> anyhow::Result<Remote> {
     let url = format!("https://api.tukui.org/v1/addon/{slug}");
-    let resp = client.get(&url).send().await?;
+    let resp = net.get(crate::net::Purpose::Tukui, &url).send().await?;
     if resp.status().as_u16() == 404 {
         anyhow::bail!("TukUI has no addon '{slug}'");
     }

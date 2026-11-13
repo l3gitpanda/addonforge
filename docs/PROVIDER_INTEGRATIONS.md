@@ -6,7 +6,7 @@ Status labels: Not started, In progress, Implemented, Tested, Blocked, Deferred.
 | Provider | Code | Status | Access |
 |---|---|---|---|
 | GitHub releases | `src-tauri/src/sources/github.rs` | Implemented (upstream; not re-audited by the fork yet) | Public, no key. 60 API requests an hour without a token when pre-releases are on. |
-| CurseForge | `src-tauri/src/sources/curseforge.rs` | Implemented; **live install not verified by the fork** (see below) | API key required. The user's own, or one built in. |
+| CurseForge | `src-tauri/src/sources/curseforge.rs` | **Tested live** with the owner's key, 13 November 2026 (see below) | API key required. The user's own, or one built in. |
 | WoWInterface | `src-tauri/src/sources/wowi.rs` | Implemented (upstream; not re-audited) | Public JSON API, no key. |
 | TukUI | `src-tauri/src/sources/tukui.rs` | Implemented (upstream; not re-audited) | Public, no key. |
 | Wago | `src-tauri/src/sources/wago.rs` | Link only | Upstream dropped it in build 25: Wago's updater keys are for its Patreon supporters. Not re-investigated by the fork yet. |
@@ -50,7 +50,9 @@ So the fork adds a **user-supplied key**:
 | `api.curseforge.com` | Search, update check, resolving a file | The API. Header `x-api-key`. |
 | `edge.forgecdn.net`, then the `forgecdn.net` host it redirects to (seen: `mediafilez.forgecdn.net`) | Downloading a file from a CurseForge project | CurseForge announced on 10 June 2026 that CDN downloads need the key from 16 July 2026, sent as `x-api-key`. |
 
-Nowhere else. Two rules in code enforce it:
+Nowhere else. Two rules in code enforce it, inside the network gate
+(`net.rs`), which also holds every CurseForge request to `api.curseforge.com`
+and `forgecdn.net` and lets the user switch CurseForge off:
 
 - `download_headers` attaches the key only to an `https` link whose host is
   `forgecdn.net` or a subdomain of it, and only for a CurseForge install.
@@ -89,14 +91,17 @@ From the *CurseForge 3rd Party API Terms and Conditions* (Overwolf), as read on
    and whether it covers World of Warcraft, is decided by Overwolf per
    application. If the key is refused for WoW, `GET /v1/games/1` answers 403 and
    the app says the key was not accepted.
-2. **Live install is unverified.** The fork has no key, so these were tested
-   only as far as they go without one: a made-up key is refused by the real API
-   and nothing is stored; a search with no key reports that a key is needed;
-   the key round-trips through the real Windows Credential Manager. Since 12
-   November 2026 the owner has a real key: it was accepted, and a CLI search
-   with it works and reports each result's `allowModDistribution` correctly.
-   Not yet seen by a session: a download that carries the key,
-   the exact status code the CDN returns for a bad key (the blog says 401; a
+2. **Live use, verified 13 November 2026** with the owner's key, through the
+   CLI against a throwaway game folder (`ADDONFORGE_STATE_DIR` plus `--cli use`):
+   search (`search leatrix`: opted-out results come back `OptOut`, allowed ones
+   resolve to an `edge.forgecdn.net` link); install of MixMap (project
+   1753359), whose download carried the key and installed one folder; the
+   update check (one batch request) reporting it up to date; after its
+   recorded version was set back by hand, the check offering the update and
+   `update` installing it; Leatrix Plus (94855, opted out) refused with the
+   "only CurseForge's own app" message; a well-formed made-up key refused by
+   CurseForge without touching the stored one. Not seen: a revoked key in use,
+   and the status code the CDN returns for a bad key (the blog says 401; a
    request with no key got 403).
 3. **Which hosts serve downloads.** Only `edge.forgecdn.net` then
    `mediafilez.forgecdn.net` was observed. If CurseForge ever redirects a

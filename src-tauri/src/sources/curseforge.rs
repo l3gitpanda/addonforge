@@ -289,17 +289,16 @@ pub fn remember_for_tests(mods: &[ModInfo]) {
     remember(mods)
 }
 
-fn request_with(client: &reqwest::Client, method: reqwest::Method, url: String, key: &str) -> reqwest::RequestBuilder {
-    client
-        .request(method, url)
+fn request_with<'a>(net: &'a crate::net::Net, method: reqwest::Method, url: String, key: &str) -> crate::net::Request<'a> {
+    net.request(crate::net::Purpose::CurseForge, method, &url)
         .header(KEY_HEADER, key)
         .header("Accept", "application/json")
         .timeout(Duration::from_secs(20))
 }
 
-fn request(client: &reqwest::Client, method: reqwest::Method, url: String) -> anyhow::Result<reqwest::RequestBuilder> {
+fn request(net: &crate::net::Net, method: reqwest::Method, url: String) -> anyhow::Result<crate::net::Request<'_>> {
     let key = key().ok_or_else(|| anyhow::anyhow!(NO_KEY))?;
-    Ok(request_with(client, method, url, &key))
+    Ok(request_with(net, method, url, &key))
 }
 
 /// The two places a request may carry the key to.
@@ -391,27 +390,26 @@ fn key_verdict(status: u16) -> Result<(), String> {
 /// One request that shows whether CurseForge accepts `key` for World of
 /// Warcraft. It uses the key it is given, not the one in use, so a key is only
 /// stored once it has worked.
-pub async fn verify_key(client: &reqwest::Client, key: &str) -> Result<(), String> {
-    let resp = request_with(client, reqwest::Method::GET, format!("{BASE}/games/{GAME_ID}"), key)
+pub async fn verify_key(net: &crate::net::Net, key: &str) -> Result<(), String> {
+    let resp = request_with(net, reqwest::Method::GET, format!("{BASE}/games/{GAME_ID}"), key)
         .send()
         .await
         // The request's address is fixed and has no key in it, but keep the
         // message to what the user can act on.
-        .map_err(|e| {
-            if e.is_timeout() || e.is_connect() {
-                "Couldn't reach CurseForge to test the key; nothing was saved".to_string()
-            } else {
-                format!("Couldn't test the key with CurseForge ({}); nothing was saved", e.without_url())
-            }
+        .map_err(|e| match e.downcast::<reqwest::Error>() {
+            Ok(h) if h.is_timeout() || h.is_connect() => "Couldn't reach CurseForge to test the key; nothing was saved".to_string(),
+            Ok(h) => format!("Couldn't test the key with CurseForge ({}); nothing was saved", h.without_url()),
+            // Refused by the network gate: offline mode, or CurseForge switched off.
+            Err(other) => format!("{other} The key was not tested or saved."),
         })?;
     key_verdict(resp.status().as_u16())
 }
 
-pub async fn fetch(client: &reqwest::Client, id: u64) -> anyhow::Result<ModInfo> {
+pub async fn fetch(net: &crate::net::Net, id: u64) -> anyhow::Result<ModInfo> {
     if let Some(m) = cached(id) {
         return Ok(m);
     }
-    let resp = request(client, reqwest::Method::GET, format!("{BASE}/mods/{id}"))?.send().await?;
+    let resp = request(net, reqwest::Method::GET, format!("{BASE}/mods/{id}"))?.send().await?;
     if let Some(e) = api_error(resp.status().as_u16()) {
         return Err(e);
     }
@@ -421,14 +419,14 @@ pub async fn fetch(client: &reqwest::Client, id: u64) -> anyhow::Result<ModInfo>
 }
 
 /// One request for many ids; what comes back is kept in memory for a while.
-pub async fn prefetch(client: &reqwest::Client, ids: &[u64]) -> anyhow::Result<usize> {
+pub async fn prefetch(net: &crate::net::Net, ids: &[u64]) -> anyhow::Result<usize> {
     let want: Vec<u64> = ids.iter().copied().filter(|id| cached(*id).is_none()).collect();
     if want.is_empty() {
         return Ok(0);
     }
     let mut total = 0;
     for chunk in want.chunks(50) {
-        let resp = request(client, reqwest::Method::POST, format!("{BASE}/mods"))?
+        let resp = request(net, reqwest::Method::POST, format!("{BASE}/mods"))?
             .json(&serde_json::json!({ "modIds": chunk, "filterPcOnly": true }))
             .send()
             .await?;
@@ -443,15 +441,15 @@ pub async fn prefetch(client: &reqwest::Client, ids: &[u64]) -> anyhow::Result<u
 }
 
 /// Forever addons matching `query`, most popular first. Not cached.
-pub async fn search(client: &reqwest::Client, query: &str, limit: usize) -> anyhow::Result<Vec<ModInfo>> {
+pub async fn search(net: &crate::net::Net, query: &str, limit: usize) -> anyhow::Result<Vec<ModInfo>> {
     let page = Page { query: query.into(), sort: Sort::Popularity, category: None, index: 0, limit };
-    Ok(search_page(client, &page).await?.0)
+    Ok(search_page(net, &page).await?.0)
 }
 
 /// One page of Forever addons plus CurseForge's total count for the
 /// filter. An empty query is the whole list. One request per call,
 /// nothing kept beyond the 15-minute in-memory mod cache.
-pub async fn search_page(client: &reqwest::Client, page: &Page) -> anyhow::Result<(Vec<ModInfo>, u64)> {
+pub async fn search_page(net: &crate::net::Net, page: &Page) -> anyhow::Result<(Vec<ModInfo>, u64)> {
     let q = page.query.trim();
     if !q.is_empty() && q.len() < 2 {
         return Ok((Vec::new(), 0));
@@ -469,7 +467,7 @@ pub async fn search_page(client: &reqwest::Client, page: &Page) -> anyhow::Resul
         url.push_str("&searchFilter=");
         url.push_str(&urlencoding(q));
     }
-    let resp = request(client, reqwest::Method::GET, url)?.send().await?;
+    let resp = request(net, reqwest::Method::GET, url)?.send().await?;
     if let Some(e) = api_error(resp.status().as_u16()) {
         return Err(e);
     }
@@ -589,8 +587,8 @@ pub fn cached_info(id: u64) -> Option<ModInfo> {
     cached(id)
 }
 
-pub async fn file(client: &reqwest::Client, mod_id: u64, file_id: u64) -> anyhow::Result<FileInfo> {
-    let resp = request(client, reqwest::Method::GET, format!("{BASE}/mods/{mod_id}/files/{file_id}"))?
+pub async fn file(net: &crate::net::Net, mod_id: u64, file_id: u64) -> anyhow::Result<FileInfo> {
+    let resp = request(net, reqwest::Method::GET, format!("{BASE}/mods/{mod_id}/files/{file_id}"))?
         .send()
         .await?;
     if let Some(e) = api_error(resp.status().as_u16()) {
@@ -600,12 +598,12 @@ pub async fn file(client: &reqwest::Client, mod_id: u64, file_id: u64) -> anyhow
     Ok(f.data)
 }
 
-pub async fn resolve(client: &reqwest::Client, id: u64, prerelease: bool) -> anyhow::Result<Remote> {
-    let m = fetch(client, id).await?;
+pub async fn resolve(net: &crate::net::Net, id: u64, prerelease: bool) -> anyhow::Result<Remote> {
+    let m = fetch(net, id).await?;
     match pick_file(&m, prerelease) {
         Pick::Ready(r) => Ok(r),
         Pick::NeedsFile(fid) => {
-            let f = file(client, id, fid).await?;
+            let f = file(net, id, fid).await?;
             remote_from(&f).ok_or_else(|| anyhow::anyhow!("{OPT_OUT}: the author only distributes this addon through CurseForge's own app"))
         }
         Pick::OptOut => anyhow::bail!("{OPT_OUT}: the author only distributes this addon through CurseForge's own app"),

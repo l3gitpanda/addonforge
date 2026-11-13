@@ -33,7 +33,8 @@ pub const USER_AGENT: &str = concat!(
 pub const REPO_URL: &str = "https://github.com/l3gitpanda/addonforge";
 
 struct App {
-    client: reqwest::Client,
+    /// Every request goes through this gate (see `net.rs`).
+    net: net::Net,
     state: Mutex<AppState>,
     catalog: Mutex<Option<(Catalog, &'static str)>>,
     stats: Mutex<Option<Stats>>,
@@ -537,7 +538,7 @@ fn head_folder<'a>(fs: &[&'a AddonFolder]) -> Option<&'a AddonFolder> {
 async fn catalog_cached(app: &App) -> Catalog {
     let mut guard = app.catalog.lock().await;
     if guard.is_none() {
-        let loaded = catalog::load(&app.client).await;
+        let loaded = catalog::load(&app.net).await;
         logi!("catalogue loaded: {} entries ({})", loaded.0.addons.len(), loaded.1);
         *guard = Some(loaded);
     }
@@ -547,7 +548,7 @@ async fn catalog_cached(app: &App) -> Catalog {
 async fn stats_cached(app: &App) -> Stats {
     let mut guard = app.stats.lock().await;
     if guard.is_none() {
-        let s = catalog::load_stats(&app.client).await;
+        let s = catalog::load_stats(&app.net).await;
         logi!("stats loaded: {} entries ({})", s.entries.len(), if s.updated.is_empty() { "none" } else { s.updated.as_str() });
         *guard = Some(s);
     }
@@ -678,7 +679,7 @@ async fn resolve_into(app: &App, pkg: &mut Package, cat: &Catalog) {
         wago_key: None,
         prerelease: st.allow_prerelease,
     };
-    match sources::resolve(&app.client, &src, opts).await {
+    match sources::resolve(&app.net, &src, opts).await {
         Ok(r) => apply_remote(pkg, r, vouched),
         Err(e) => {
             let msg = e.to_string();
@@ -782,8 +783,18 @@ async fn check_all(app: Shared, pkgs: &mut [Package], cat: &Catalog) {
         .collect();
     curse_ids.sort_unstable();
     curse_ids.dedup();
-    if !curse_ids.is_empty() && sources::curseforge::available() {
-        match sources::curseforge::prefetch(&app.client, &curse_ids).await {
+    // Offline mode, or a source switched off: those rows say so and nothing is
+    // asked. The gate would refuse the requests anyway; this keeps them out of
+    // the activity list and gives each row a reason instead of an error.
+    for p in pkgs.iter_mut().filter(|p| !p.ignored && p.status == "unknown") {
+        if let Some(reason) = p.source.as_ref().and_then(|s| app.net.refusal(s.purpose())) {
+            p.status = "unknown".into();
+            p.note = reason.not_checked();
+        }
+    }
+    let curse_refused = app.net.refusal(net::Purpose::CurseForge).is_some();
+    if !curse_ids.is_empty() && sources::curseforge::available() && !curse_refused {
+        match sources::curseforge::prefetch(&app.net, &curse_ids).await {
             Ok(n) => logi!("curseforge: prefetched {n} of {} addons in one request", curse_ids.len()),
             Err(e) => loge!("curseforge prefetch: {e}"),
         }
@@ -791,7 +802,7 @@ async fn check_all(app: Shared, pkgs: &mut [Package], cat: &Catalog) {
     let sem = Arc::new(Semaphore::new(6));
     let mut set = tokio::task::JoinSet::new();
     for (i, p) in pkgs.iter().enumerate() {
-        if p.source.is_none() || p.ignored {
+        if p.source.is_none() || p.ignored || p.source.as_ref().is_some_and(|s| app.net.refusal(s.purpose()).is_some()) {
             continue;
         }
         let mut p = p.clone();
@@ -861,6 +872,8 @@ struct Settings {
     self_update: bool,
     /// What a reversible removal is called here: "Recycle Bin" or "Trash".
     recycle_label: String,
+    /// Offline mode and the network switches.
+    network: net::Policy,
 }
 
 #[tauri::command]
@@ -890,6 +903,7 @@ async fn get_settings(app: State<'_, Shared>) -> Result<Settings, String> {
         auto_update: st.auto_update,
         self_update: selfupdate::enabled(),
         recycle_label: recycle::label().into(),
+        network: st.network.clone(),
     })
 }
 
@@ -901,6 +915,9 @@ async fn change_settings<R>(app: &App, change: impl FnOnce(&mut AppState) -> R) 
     let mut fresh = AppState::load();
     let out = change(&mut fresh);
     fresh.save().map_err(err)?;
+    // Another copy of the app may have changed the network settings too: the
+    // gate follows whatever is now on disk.
+    app.net.set_policy(fresh.network.clone());
     *app.state.lock().await = fresh;
     drop(lock);
     Ok(out)
@@ -1094,9 +1111,15 @@ async fn scan(app: State<'_, Shared>) -> Result<Vec<Package>, String> {
     scan_packages(&app).await
 }
 
+/// `at_launch`: the check the app runs by itself when it opens, which the user
+/// can switch off (Settings, Network). Asked for by hand, it always runs.
 #[tauri::command]
-async fn check_updates(app: State<'_, Shared>) -> Result<Vec<Package>, String> {
+async fn check_updates(app: State<'_, Shared>, at_launch: Option<bool>) -> Result<Vec<Package>, String> {
     let mut pkgs = scan_packages(&app).await?;
+    if at_launch.unwrap_or(false) && !app.net.policy().launch_check {
+        logi!("check at launch is switched off");
+        return Ok(pkgs);
+    }
     let cat = catalog_cached(&app).await;
     check_all(app.inner().clone(), &mut pkgs, &cat).await;
     let n = pkgs.iter().filter(|p| p.status == "update").count();
@@ -1121,7 +1144,7 @@ async fn install_from(
         wago_key: None,
         prerelease: st.allow_prerelease,
     };
-    let remote = sources::resolve(&app.client, src, opts).await.map_err(|e| resolve_error(&e))?;
+    let remote = sources::resolve(&app.net, src, opts).await.map_err(|e| resolve_error(&e))?;
     let vouched = entry.and_then(|e| e.forever);
     // A source archive says nothing about flavours (forever = None); then the
     // catalogue's own verdict stands in for it.
@@ -1140,7 +1163,7 @@ async fn install_from(
         Source::Curse(_) => (sources::curseforge::download_headers(&remote.download_url), true),
         _ => (Vec::new(), false),
     };
-    let zip = install::download(&app.client, &remote.download_url, &tmp, &remote.filename, &auth)
+    let zip = install::download(&app.net, src.purpose(), &remote.download_url, &tmp, &remote.filename, &auth)
         .await
         .map_err(|e| {
             let msg = if from_curse { sources::curseforge::download_error(&e) } else { e.to_string() };
@@ -1501,8 +1524,7 @@ async fn package_icons(app: State<'_, Shared>, keys: Vec<String>) -> Result<Hash
         if icon.is_none() {
             if let Some(Source::Github(repo)) = &p.source {
                 if let Some(url) = icons::github_avatar_url(repo) {
-                    let (c, u) = (app.client.clone(), url.clone());
-                    icon = icon_cached(&app, format!("url:{url}"), async move { icons::remote_icon(&c, &u).await }).await;
+                    icon = icon_cached(&app, format!("url:{url}"), icons::remote_icon(&app.net, &url)).await;
                 }
             }
         }
@@ -1524,8 +1546,7 @@ async fn catalog_icons(app: State<'_, Shared>, ids: Vec<String>) -> Result<HashM
             .clone()
             .or_else(|| e.github.as_deref().and_then(icons::github_avatar_url));
         let Some(url) = url else { continue };
-        let (c, u) = (app.client.clone(), url.clone());
-        if let Some(i) = icon_cached(&app, format!("url:{url}"), async move { icons::remote_icon(&c, &u).await }).await {
+        if let Some(i) = icon_cached(&app, format!("url:{url}"), icons::remote_icon(&app.net, &url)).await {
             out.insert(e.id.clone(), i);
         }
     }
@@ -1540,7 +1561,7 @@ async fn addon_details(app: State<'_, Shared>, id: String) -> Result<icons::Deta
     let cat = catalog_cached(&app).await;
     let Some(e) = cat.addons.iter().find(|e| e.id == id) else { return Ok(icons::Details::default()) };
     match &e.github {
-        Some(repo) => Ok(icons::github_details(&app.client, repo).await),
+        Some(repo) => Ok(icons::github_details(&app.net, repo).await),
         None => Ok(icons::Details::default()),
     }
 }
@@ -1594,7 +1615,7 @@ async fn curse_search(
         index: index.unwrap_or(0),
         limit: 50,
     };
-    let (mods, total) = sources::curseforge::search_page(&app.client, &page).await.map_err(err)?;
+    let (mods, total) = sources::curseforge::search_page(&app.net, &page).await.map_err(err)?;
     let cat = catalog_cached(&app).await;
     let st = app.state.lock().await.clone();
     let have: Vec<Package> = scan_packages(&app).await.unwrap_or_default();
@@ -1667,7 +1688,7 @@ fn secret_store(app: &App) -> Result<Arc<secrets::Secrets>, String> {
 async fn save_curse_key(app: &App, key: &str) -> Result<CurseKeyState, String> {
     let key = sources::curseforge::checked_key(key)?;
     let store = secret_store(app)?;
-    sources::curseforge::verify_key(&app.client, &key).await?;
+    sources::curseforge::verify_key(&app.net, &key).await?;
     let stored = key.clone();
     let label = store.label();
     tokio::task::spawn_blocking(move || store.set(secrets::CURSEFORGE_KEY, &stored))
@@ -1984,12 +2005,44 @@ async fn import_list(app: State<'_, Shared>, path: String) -> Result<Vec<ImportR
         .collect())
 }
 
+// ---------------------------------------------------------------- network
+
+/// Save the network settings; the gate applies them to the next request.
+/// Turning the catalogue or totals back on (or leaving offline mode) drops
+/// the copies held for this run, so the next look fetches them again.
+#[tauri::command]
+async fn set_network(app: State<'_, Shared>, network: net::Policy) -> Result<net::Policy, String> {
+    let before = app.net.policy();
+    let saved = network.clone();
+    change_settings(&app, move |st| st.network = saved).await?;
+    logi!("network settings: {}", network.summary());
+    let reread = |p: &net::Policy, f: fn(&net::Policy) -> bool| !p.offline && f(p);
+    if reread(&network, |p| p.catalogue) && !reread(&before, |p| p.catalogue) {
+        *app.catalog.lock().await = None;
+    }
+    if reread(&network, |p| p.stats) && !reread(&before, |p| p.stats) {
+        *app.stats.lock().await = None;
+    }
+    // Icons refused under the old settings are remembered as missing for this
+    // run; forget them so they can load now. The disk cache stays.
+    if network != before {
+        app.icon_cache.lock().await.clear();
+    }
+    Ok(network)
+}
+
+/// What the gate sent and refused since the app started. In memory only.
+#[tauri::command]
+fn network_activity(app: State<'_, Shared>) -> net::Snapshot {
+    app.net.snapshot()
+}
+
 // ---------------------------------------------------------------- self-update
 
 #[tauri::command]
 async fn check_self_update(app: State<'_, Shared>) -> Result<selfupdate::SelfUpdate, String> {
     let url = std::env::var("ADDONFORGE_UPDATE_URL").ok();
-    let mut r = selfupdate::check(&app.client, url.as_deref()).await;
+    let mut r = selfupdate::check(&app.net, url.as_deref()).await;
     if !r.enabled {
         // No update channel in this build: nothing was asked, nothing to report.
         return Ok(r);
@@ -2015,7 +2068,7 @@ async fn skip_self_update(app: State<'_, Shared>, tag: String) -> Result<(), Str
 #[tauri::command]
 async fn apply_self_update(app: State<'_, Shared>, handle: tauri::AppHandle) -> Result<String, String> {
     let url = std::env::var("ADDONFORGE_UPDATE_URL").ok();
-    let r = selfupdate::check(&app.client, url.as_deref()).await;
+    let r = selfupdate::check(&app.net, url.as_deref()).await;
     if !r.enabled {
         return Err(selfupdate::OFF.into());
     }
@@ -2023,7 +2076,7 @@ async fn apply_self_update(app: State<'_, Shared>, handle: tauri::AppHandle) -> 
     if !r.available {
         return Err("Already up to date".into());
     }
-    let new_exe = selfupdate::apply(&app.client, &latest).await.map_err(|e| {
+    let new_exe = selfupdate::apply(&app.net, &latest).await.map_err(|e| {
         loge!("self-update: {e}");
         e.to_string()
     })?;
@@ -2104,7 +2157,7 @@ async fn whats_new(app: State<'_, Shared>) -> Result<Option<WhatsNew>, String> {
     let mut result = None;
     if existing {
         let url = std::env::var("ADDONFORGE_UPDATE_URL").ok();
-        let r = selfupdate::check(&app.client, url.as_deref()).await;
+        let r = selfupdate::check(&app.net, url.as_deref()).await;
         if let Some(l) = r.latest {
             if l.build == current {
                 let notes = whats_new_text(&l, last, current);
@@ -2145,6 +2198,7 @@ async fn diagnostics(app: State<'_, Shared>) -> Result<String, String> {
         st.pinned.len(),
         st.ignored.len()
     ));
+    s.push_str(&format!("Network: {}\n", st.network.summary()));
     s.push_str(&format!("Addons on disk: {}\n", pkgs.len()));
     for p in &pkgs {
         s.push_str(&format!(
@@ -2192,26 +2246,13 @@ fn redact_paths(text: &str) -> String {
 // ---------------------------------------------------------------- boot
 
 fn make_app() -> Shared {
-    let redirects = reqwest::redirect::Policy::custom(|attempt| {
-        let from = attempt.previous().last().and_then(|u| u.host_str().map(str::to_owned));
-        if attempt.previous().len() >= 10 {
-            attempt.error("too many redirects")
-        } else if !sources::curseforge::redirect_keeps_key_home(from.as_deref(), attempt.url().host_str()) {
-            attempt.error("CurseForge redirected away from its API host")
-        } else {
-            attempt.follow()
-        }
-    });
-    let client = reqwest::Client::builder()
-        .user_agent(USER_AGENT)
-        // Applies to every hop, so a redirect can't downgrade a download to plain http.
-        .https_only(true)
-        .redirect(redirects)
-        .timeout(std::time::Duration::from_secs(120))
-        .connect_timeout(std::time::Duration::from_secs(15))
-        .build()
-        .expect("http client");
     let st = AppState::load();
+    // https only on every hop, a redirect limit, the CurseForge key kept on
+    // CurseForge, and the user's network settings: all in `net.rs`.
+    let net = net::Net::new(st.network.clone());
+    if st.network.offline {
+        logi!("offline mode is on: no network requests");
+    }
     if let Some(p) = &st.install_path {
         install::clean_tmp(&addons_dir(p));
     }
@@ -2229,7 +2270,7 @@ fn make_app() -> Shared {
         Err(e) => loge!("credential store unavailable: {e}"),
     }
     Arc::new(App {
-        client,
+        net,
         state: Mutex::new(st),
         catalog: Mutex::new(None),
         stats: Mutex::new(None),
@@ -2300,7 +2341,7 @@ pub fn cli(args: &[String]) -> i32 {
                         let src = pick_source(Some(&e), &AddonFolder::default(), None);
                         let r = match &src {
                             Some(s) => sources::resolve(
-                                &app.client,
+                                &app.net,
                                 s,
                                 ResolveOpts {
                                     asset_hint: e.asset_hint.as_deref(),
@@ -2362,7 +2403,7 @@ pub fn cli(args: &[String]) -> i32 {
             "backup" => Ok(serde_json::to_value(do_backup(&app).await?).unwrap()),
             "search" => {
                 let q = args[1..].join(" ");
-                let mods = sources::curseforge::search(&app.client, &q, 15).await.map_err(|e| e.to_string())?;
+                let mods = sources::curseforge::search(&app.net, &q, 15).await.map_err(|e| e.to_string())?;
                 let st = app.state.lock().await.clone();
                 Ok(serde_json::Value::Array(mods.iter().map(|m| serde_json::json!({
                     "id": m.id, "name": m.name, "downloads": m.download_count,
@@ -2419,6 +2460,22 @@ pub fn cli(args: &[String]) -> i32 {
                 drop(lock);
                 Ok(serde_json::json!({ "removed": gone }))
             }
+            "network" => {
+                let mut policy = app.net.policy();
+                if let Some(name) = args.get(1) {
+                    let on = match args.get(2).map(String::as_str) {
+                        Some("on") => true,
+                        Some("off") => false,
+                        _ => return Err(format!("usage: network [{} on|off]", net::Policy::SWITCHES.join("|"))),
+                    };
+                    if !policy.set(name, on) {
+                        return Err(format!("no network switch called {name:?}; there are: {}", net::Policy::SWITCHES.join(", ")));
+                    }
+                    let saved = policy.clone();
+                    change_settings(&app, move |st| st.network = saved).await?;
+                }
+                Ok(serde_json::to_value(policy).unwrap())
+            }
             "prerelease" => {
                 let v = args.get(1).map(|s| s == "on").unwrap_or(false);
                 change_settings(&app, |st| st.allow_prerelease = v).await?;
@@ -2442,7 +2499,7 @@ pub fn cli(args: &[String]) -> i32 {
             }
             "selfcheck" => {
                 let url = args.get(1).cloned().or_else(|| std::env::var("ADDONFORGE_UPDATE_URL").ok());
-                let r = selfupdate::check(&app.client, url.as_deref()).await;
+                let r = selfupdate::check(&app.net, url.as_deref()).await;
                 Ok(serde_json::to_value(r).unwrap())
             }
             #[cfg(not(windows))]
@@ -2452,7 +2509,7 @@ pub fn cli(args: &[String]) -> i32 {
             #[cfg(windows)]
             "selfupdate" => {
                 let url = args.get(1).cloned().or_else(|| std::env::var("ADDONFORGE_UPDATE_URL").ok());
-                let r = selfupdate::check(&app.client, url.as_deref()).await;
+                let r = selfupdate::check(&app.net, url.as_deref()).await;
                 if !r.enabled {
                     return Err(selfupdate::OFF.into());
                 }
@@ -2461,7 +2518,7 @@ pub fn cli(args: &[String]) -> i32 {
                 if !r.available && !force {
                     return Err("already up to date (use --force to test)".into());
                 }
-                let p = selfupdate::apply(&app.client, &latest).await.map_err(err)?;
+                let p = selfupdate::apply(&app.net, &latest).await.map_err(err)?;
                 Ok(serde_json::json!({ "started": p }))
             }
             "diag" => {
@@ -2504,6 +2561,8 @@ pub fn run() {
             set_ignore,
             scan,
             check_updates,
+            set_network,
+            network_activity,
             update_package,
             catalog_list,
             bundles,
@@ -2647,7 +2706,12 @@ mod tests {
     fn settings_on_disk_have_no_place_for_an_api_key() {
         // The CurseForge key lives in the OS credential store. If a field for it
         // ever appears in the settings file, this fails.
-        let json = serde_json::to_string(&AppState::default()).unwrap().to_ascii_lowercase();
+        let mut value = serde_json::to_value(AppState::default()).unwrap();
+        // The network switches are named after the sites (one is "curseforge"),
+        // and are on/off flags only.
+        let network = value.as_object_mut().unwrap().remove("network").unwrap();
+        assert!(network.as_object().unwrap().values().all(|v| v.is_boolean()), "{network}");
+        let json = value.to_string().to_ascii_lowercase();
         assert!(!json.contains("curse"), "{json}");
         let fields: Vec<&str> = json.split('"').filter(|part| part.contains("key")).collect();
         assert_eq!(fields, ["wago_key"], "only the unused legacy Wago field mentions a key");
@@ -3735,5 +3799,79 @@ mod local_zip_tests {
             assert_eq!(p.status, "local", "{id}: not newer, so nothing to do");
             assert_eq!(p.note, local_note("NetherSuite-1.2.3.zip"), "{id}");
         }
+    }
+}
+
+#[cfg(test)]
+mod network_gate_tests {
+    use super::*;
+
+    fn app_with(policy: net::Policy) -> Shared {
+        // No host is allowed: whatever the check does try to send is refused
+        // and listed, so the test can see what was attempted. Nothing leaves
+        // this machine.
+        let net = net::Net::for_tests(&[]);
+        net.set_policy(policy);
+        Arc::new(App {
+            net,
+            state: Mutex::new(AppState::default()),
+            catalog: Mutex::new(None),
+            stats: Mutex::new(None),
+            icon_cache: Mutex::new(HashMap::new()),
+            secrets: Err("not used in tests".into()),
+        })
+    }
+
+    /// A GitHub addon and a Tukui addon, as a scan finds them.
+    fn packages() -> (Catalog, Vec<Package>) {
+        let cat: Catalog = serde_json::from_str(
+            r#"{"addons":[
+                {"id":"atlas","name":"Atlas","github":"author/Atlas","folders":["Atlas"]},
+                {"id":"elvui","name":"ElvUI","tukui":"elvui","folders":["ElvUI"]}
+            ]}"#,
+        )
+        .unwrap();
+        let folders = ["Atlas", "ElvUI"].map(|name| AddonFolder {
+            folder: name.into(),
+            title: name.into(),
+            version: Some("1.0".into()),
+            interfaces: vec![16001],
+            forever_interface: true,
+            ..Default::default()
+        });
+        let pkgs = build_packages(&AppState::default(), &cat, &folders);
+        (cat, pkgs)
+    }
+
+    fn run<T>(f: impl std::future::Future<Output = T>) -> T {
+        tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(f)
+    }
+
+    #[test]
+    fn offline_the_update_check_asks_nothing_and_says_why() {
+        let app = app_with(net::Policy { offline: true, ..Default::default() });
+        let (cat, mut pkgs) = packages();
+        assert_eq!(pkgs.len(), 2);
+        run(check_all(app.clone(), &mut pkgs, &cat));
+        for p in &pkgs {
+            assert_eq!(p.status, "unknown", "{}", p.key);
+            assert!(p.note.contains("offline mode is on"), "{}: {}", p.key, p.note);
+        }
+        assert!(app.net.snapshot().entries.is_empty(), "nothing was attempted");
+    }
+
+    #[test]
+    fn a_switched_off_source_is_skipped_and_the_others_are_checked() {
+        let app = app_with(net::Policy { github: false, ..Default::default() });
+        let (cat, mut pkgs) = packages();
+        run(check_all(app.clone(), &mut pkgs, &cat));
+        let atlas = pkgs.iter().find(|p| p.key == "cat:atlas").unwrap();
+        assert_eq!(atlas.status, "unknown");
+        assert!(atlas.note.contains("GitHub is switched off"), "{}", atlas.note);
+        // ElvUI's check went to the gate (and was refused there: this test allows no host).
+        let elvui = pkgs.iter().find(|p| p.key == "cat:elvui").unwrap();
+        assert_eq!(elvui.status, "error", "{}", elvui.note);
+        let tried: Vec<net::Purpose> = app.net.snapshot().entries.iter().map(|e| e.purpose).collect();
+        assert_eq!(tried, [net::Purpose::Tukui]);
     }
 }

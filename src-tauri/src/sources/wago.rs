@@ -10,7 +10,7 @@ use serde_json::Value;
 
 
 pub async fn resolve(
-    client: &reqwest::Client,
+    net: &crate::net::Net,
     id: &str,
     key: Option<&str>,
     prerelease: bool,
@@ -20,7 +20,7 @@ pub async fn resolve(
         .filter(|k| !k.is_empty())
         .ok_or_else(|| anyhow::anyhow!("Wago needs your API key (Settings)"))?;
     let url = format!("https://addons.wago.io/api/external/addons/{id}?game_version=forever");
-    let resp = client.get(&url).bearer_auth(key).send().await?;
+    let resp = net.get(crate::net::Purpose::Wago, &url).bearer_auth(key).send().await?;
     match resp.status().as_u16() {
         401 | 403 => anyhow::bail!("Wago rejected the API key"),
         404 => anyhow::bail!("Wago has no Forever release for this addon"),

@@ -49,6 +49,17 @@ impl Source {
             Source::Curse(_) => "CurseForge".into(),
         }
     }
+    /// What the network gate calls requests to this source.
+    pub fn purpose(&self) -> crate::net::Purpose {
+        use crate::net::Purpose;
+        match self {
+            Source::Github(_) => Purpose::GitHub,
+            Source::Wago(_) => Purpose::Wago,
+            Source::Wowi(_) => Purpose::WoWInterface,
+            Source::Tukui(_) => Purpose::Tukui,
+            Source::Curse(_) => Purpose::CurseForge,
+        }
+    }
     pub fn url(&self) -> String {
         match self {
             Source::Github(r) => format!("https://github.com/{r}/releases/latest"),
@@ -93,16 +104,16 @@ pub struct ResolveOpts<'a> {
 }
 
 pub async fn resolve(
-    client: &reqwest::Client,
+    net: &crate::net::Net,
     src: &Source,
     opts: ResolveOpts<'_>,
 ) -> anyhow::Result<Remote> {
     match src {
-        Source::Github(repo) => github::resolve(client, repo, opts.asset_hint, opts.prerelease).await,
-        Source::Wago(id) => wago::resolve(client, id, opts.wago_key, opts.prerelease).await,
-        Source::Wowi(id) => wowi::resolve(client, *id).await,
-        Source::Tukui(slug) => tukui::resolve(client, slug).await,
-        Source::Curse(id) => curseforge::resolve(client, *id, opts.prerelease).await,
+        Source::Github(repo) => github::resolve(net, repo, opts.asset_hint, opts.prerelease).await,
+        Source::Wago(id) => wago::resolve(net, id, opts.wago_key, opts.prerelease).await,
+        Source::Wowi(id) => wowi::resolve(net, *id).await,
+        Source::Tukui(slug) => tukui::resolve(net, slug).await,
+        Source::Curse(id) => curseforge::resolve(net, *id, opts.prerelease).await,
     }
 }
 

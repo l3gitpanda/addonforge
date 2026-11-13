@@ -146,7 +146,10 @@ document.querySelectorAll(".tab").forEach((btn) =>
     document.querySelectorAll(".panel").forEach((p) => p.classList.toggle("active", p.id === "tab-" + btn.dataset.tab));
     document.querySelector("main").scrollTop = 0;
     if ((btn.dataset.tab === "browse" || btn.dataset.tab === "start") && !catalog.length) loadCatalog(false);
-    if (btn.dataset.tab === "settings") loadSettings();
+    if (btn.dataset.tab === "settings") {
+      loadSettings();
+      loadActivity();
+    }
   })
 );
 
@@ -468,7 +471,19 @@ async function rescan(keepStatus = false) {
   }
 }
 
-async function checkUpdates() {
+/// The check the app runs by itself when it opens. Switched off, or in offline
+/// mode, it asks nothing and says so. True when it ran.
+async function launchCheck() {
+  const net = settings?.network;
+  if (net?.offline || net?.launch_check === false) {
+    $("last-checked").textContent = net.offline ? "Offline mode: not checked" : "Not checked at launch (Settings, Network)";
+    return false;
+  }
+  await checkUpdates(true);
+  return true;
+}
+
+async function checkUpdates(atLaunch = false) {
   setBusy(true);
   $("btn-check").innerHTML = '<span class="spinner"></span> Checking…';
   packages.forEach((p) => {
@@ -476,12 +491,14 @@ async function checkUpdates() {
   });
   renderInstalled();
   try {
-    packages = await invoke("check_updates");
+    // Only a real `true` is the launch check: the core expects a boolean.
+    packages = await invoke("check_updates", { atLaunch: atLaunch === true });
     $("last-checked").textContent = `Checked at ${new Date().toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
     renderInstalled();
     const n = packages.filter((p) => p.status === "update" && !p.ignored && !p.pinned).length;
     const unchecked = packages.filter((p) => !p.ignored && p.status !== "ok" && p.status !== "update").length;
-    toast(n ? `${n} update${n === 1 ? "" : "s"} available` : unchecked ? `Check complete. ${unchecked} addon${unchecked === 1 ? " could" : "s could"} not be verified.` : "All checked addons are up to date");
+    if (settings?.network?.offline) toast("Offline mode is on, so nothing was checked.");
+    else toast(n ? `${n} update${n === 1 ? "" : "s"} available` : unchecked ? `Check complete. ${unchecked} addon${unchecked === 1 ? " could" : "s could"} not be verified.` : "All checked addons are up to date");
   } catch (err) {
     toast(String(err), true);
   } finally {
@@ -564,7 +581,8 @@ $("livehint-skip").onclick = async () => {
   try { await invoke("dismiss_live_hint", { path: liveHintPath }); } catch (_) {}
 };
 
-$("btn-check").onclick = checkUpdates;
+// Through a wrapper: the click event must not reach `atLaunch`.
+$("btn-check").onclick = () => checkUpdates();
 $("btn-rescan").onclick = () => rescan();
 $("btn-update-all").onclick = updateAll;
 
@@ -1206,8 +1224,9 @@ async function loadSettings() {
   $("pref-prerelease").checked = !!settings.allow_prerelease;
   $("pref-autoupdate").checked = !!settings.auto_update;
   $("catalog-info").textContent = settings.catalog_count
-    ? `${settings.catalog_count} addons · ${settings.catalog_source === "remote" ? "latest from GitHub" : settings.catalog_source === "bundled (GitHub copy not signed)" ? "built-in copy (GitHub copy failed its signature check)" : settings.catalog_source === "bundled (newer)" ? "built-in copy (newer than GitHub's)" : "built-in copy (GitHub copy unreachable)"}${settings.catalog_updated ? " · " + settings.catalog_updated : ""}`
+    ? `${settings.catalog_count} addons · ${CATALOG_SOURCE[settings.catalog_source] || "built-in copy (GitHub copy unreachable)"}${settings.catalog_updated ? " · " + settings.catalog_updated : ""}`
     : "not loaded yet";
+  renderNetwork();
   $("install-line").textContent = settings.install
     ? "Game folder connected"
     : "No game folder selected — choose one in Settings";
@@ -1219,6 +1238,95 @@ async function loadSettings() {
   renderCurseKey();
   $("footer-open-folder").disabled = !settings.install;
 }
+
+/// Where the catalogue in use came from, as `catalog::load` names it.
+const CATALOG_SOURCE = {
+  remote: "latest from GitHub",
+  "bundled (GitHub copy not signed)": "built-in copy (GitHub copy failed its signature check)",
+  "bundled (newer)": "built-in copy (newer than GitHub's)",
+  "bundled (offline)": "built-in copy (offline mode)",
+  "bundled (refresh off)": "built-in copy (refresh switched off)",
+};
+
+// ---------------------------------------------------------------- network
+// The switches mirror net::Policy in the core, which enforces them on every
+// request. A change saves the whole set and applies to the next request.
+const NET_SWITCHES = [
+  ["net-offline", "offline"],
+  ["net-launch-check", "launch_check"],
+  ["net-catalogue", "catalogue"],
+  ["net-stats", "stats"],
+  ["net-curseforge", "curseforge"],
+  ["net-github", "github"],
+  ["net-wowinterface", "wowinterface"],
+  ["net-tukui", "tukui"],
+  ["net-images", "images"],
+];
+
+function renderNetwork() {
+  const net = settings?.network;
+  if (!net) return;
+  for (const [id, field] of NET_SWITCHES) $(id).checked = !!net[field];
+  $("net-switches").classList.toggle("dim", !!net.offline);
+  $("offline-badge").classList.toggle("hidden", !net.offline);
+}
+
+async function saveNetwork() {
+  if (!settings?.network) return;
+  const previous = { ...settings.network };
+  const next = { ...previous };
+  for (const [id, field] of NET_SWITCHES) next[field] = !!$(id).checked;
+  for (const [id] of NET_SWITCHES) $(id).disabled = true;
+  try {
+    settings.network = await invoke("set_network", { network: next });
+    if (previous.offline !== settings.network.offline) {
+      toast(settings.network.offline ? "Offline mode is on. AddonForge makes no network requests until you turn it off." : "Offline mode is off.");
+    }
+    // Back online, or the catalogue turned on again: the core dropped its copy, so show the fresh one.
+    const reads = (n, field) => !n.offline && n[field];
+    if (["catalogue", "stats"].some((f) => reads(settings.network, f) && !reads(previous, f))) loadCatalog(false);
+  } catch (err) {
+    settings.network = previous;
+    toast(String(err), true);
+  } finally {
+    for (const [id] of NET_SWITCHES) $(id).disabled = false;
+    renderNetwork();
+  }
+  await loadActivity();
+}
+for (const [id] of NET_SWITCHES) $(id).onchange = saveNetwork;
+
+const PURPOSE_LABEL = {
+  catalogue: "Catalogue", stats: "Download totals", appupdate: "App update", curseforge: "CurseForge", github: "GitHub",
+  wowinterface: "WoWInterface", tukui: "Tukui", wago: "Wago", details: "Addon details", images: "Images",
+};
+const purposeLabel = (p) => PURPOSE_LABEL[p] || p;
+
+function renderActivity(snap) {
+  const counts = snap?.counts || [];
+  const sent = counts.reduce((n, c) => n + c.sent, 0);
+  const refused = counts.reduce((n, c) => n + c.refused, 0);
+  $("net-activity-sum").textContent = counts.length
+    ? `${sent} sent, ${refused} refused: ` + counts.map((c) => `${purposeLabel(c.purpose)} ${c.sent}${c.refused ? ` (${c.refused} refused)` : ""}`).join(" · ")
+    : "Nothing sent or refused yet.";
+  $("net-activity-list").innerHTML = (snap?.entries || [])
+    .slice(0, 150)
+    .map((e) => {
+      const time = new Date(e.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+      const cls = e.outcome === "refused" ? "refused" : e.outcome === "failed" || /^[45]/.test(e.outcome) ? "failed" : "";
+      return `<div class="net-row ${cls}"><span class="t">${esc(time)}</span><span class="p">${esc(purposeLabel(e.purpose))}</span><span class="u" title="${esc(e.host + e.path)}">${esc(e.host)}<span class="muted">${esc(e.path)}</span></span><span class="o">${esc(e.outcome)}${e.detail ? ` <span class="muted">${esc(e.detail)}</span>` : ""}</span></div>`;
+    })
+    .join("");
+}
+
+async function loadActivity() {
+  try {
+    renderActivity(await invoke("network_activity"));
+  } catch (err) {
+    $("net-activity-sum").textContent = String(err);
+  }
+}
+$("btn-net-refresh").onclick = loadActivity;
 
 // ---------------------------------------------------------------- CurseForge API key
 // The key itself never comes back from the core: the UI only learns whose key
@@ -1528,8 +1636,7 @@ $("selfupdate-go").onclick = async () => {
   invoke("app_ready").catch(() => {});
   if (settings && settings.install_path) {
     await rescan();
-    await checkUpdates();
-    if (settings.auto_update) await updateAll();
+    if ((await launchCheck()) && settings.auto_update) await updateAll();
     liveHint();
   } else {
     document.querySelector('.tab[data-tab="settings"]').click();
